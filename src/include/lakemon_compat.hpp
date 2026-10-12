@@ -10,29 +10,29 @@
 
 #include <new>
 
-// DuckDB's extension CMake defines DUCKDB_MAJOR_VERSION. Fall back to the
-// identifier header that exists only on 2.x if the macro is missing.
-#ifndef DUCKDB_MAJOR_VERSION
+// Detect DuckDB 2.x by result_format.hpp, which exists only on 2.x.
+// identifier.hpp is not a 2.x signal: it was backported to 1.5.6.
+// Prefer the header probe over DUCKDB_MAJOR_VERSION: some CI toolchains
+// omit that macro or set it unexpectedly.
 #if defined(__has_include)
-#if __has_include("duckdb/common/identifier.hpp")
-#define DUCKDB_MAJOR_VERSION 2
+#if __has_include("duckdb/main/result_format.hpp")
+#define LAKEMON_DUCKDB_2 1
 #else
-#define DUCKDB_MAJOR_VERSION 1
+#define LAKEMON_DUCKDB_2 0
 #endif
+#elif defined(DUCKDB_MAJOR_VERSION) && DUCKDB_MAJOR_VERSION >= 2
+#define LAKEMON_DUCKDB_2 1
 #else
-#define DUCKDB_MAJOR_VERSION 1
-#endif
+#define LAKEMON_DUCKDB_2 0
 #endif
 
-#if DUCKDB_MAJOR_VERSION >= 2
-#define LAKEMON_DUCKDB_2 1
+#if LAKEMON_DUCKDB_2
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/main/result_format.hpp"
 #else
-#define LAKEMON_DUCKDB_2 0
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 #endif
