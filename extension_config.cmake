@@ -9,6 +9,7 @@ duckdb_extension_load(lakemon
 # ducklake needs roaring from vcpkg (not in this repo's manifest) and
 # postgres_scanner needs libpq. linux_amd64 distribution still runs
 # test/sql without ducklake (require ducklake skips execute tests).
+# PRAGMA rewrite and missing ducklake CALLs must not throw INTERNAL.
 if (DEFINED ENV{LAKEMON_CI_POSTGRES} AND NOT "$ENV{LAKEMON_CI_POSTGRES}" STREQUAL "")
   # Pin GIT_URL / GIT_TAG from DuckDB's own ducklake.cmake (version-matched).
   # Skip LOAD_TESTS. APPLY_PATCHES uses patches from the DuckDB source tree.

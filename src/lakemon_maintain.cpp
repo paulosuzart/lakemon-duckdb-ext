@@ -83,7 +83,19 @@ std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute)
 void RequireMaintainExecute(duckdb::ClientContext &context, bool has_prepared_parameters,
                             const char *statement_override) {
 	std::string error;
-	const std::string statement = statement_override ? std::string(statement_override) : context.GetCurrentQuery();
+	std::string statement;
+	if (statement_override) {
+		statement = statement_override;
+	} else {
+		// GetCurrentQuery() dereferences active_query. PRAGMA rewrite runs in
+		// ParseStatementsInternal before BeginQueryInternal, so active_query is
+		// null and unique_ptr throws INTERNAL (invalidates the database).
+		try {
+			statement = context.GetCurrentQuery();
+		} catch (const duckdb::InternalException &) {
+			statement.clear();
+		}
+	}
 	if (MaintainExecuteRefused(context.transaction.IsAutoCommit(), statement, error, has_prepared_parameters)) {
 		throw duckdb::InvalidInputException("%s", error.c_str());
 	}
@@ -98,9 +110,34 @@ static void AppendDetails(MaintainRow &row, const std::string &suffix) {
 	row.details += suffix;
 }
 
+static bool DuckLakeFunctionRegistered(duckdb::ClientContext &context) {
+	if (!context.db) {
+		return false;
+	}
+	try {
+		duckdb::Connection con(*context.db);
+		auto result =
+		    con.Query("SELECT 1 FROM duckdb_functions() WHERE function_name = 'ducklake_expire_snapshots' LIMIT 1");
+		if (!result || result->HasError()) {
+			return false;
+		}
+		return result->RowCount() > 0;
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const Exception &) {
+		return false;
+	} catch (const std::exception &) {
+		return false;
+	}
+}
+
 void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows) {
 	bool failed = false;
 	bool interrupted = false;
+	bool ducklake_checked = false;
+	bool ducklake_present = true;
 	for (auto &row : rows) {
 		if (row.sql.empty()) {
 			continue;
@@ -109,6 +146,18 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 			row.status = "skip";
 			AppendDetails(row, interrupted ? "not run: interrupted" : "not run: previous step failed");
 			continue;
+		}
+		if (row.sql.find("ducklake_") != std::string::npos) {
+			if (!ducklake_checked) {
+				ducklake_present = DuckLakeFunctionRegistered(context);
+				ducklake_checked = true;
+			}
+			if (!ducklake_present) {
+				row.status = "error";
+				AppendDetails(row, "lakemon: ducklake is not loaded");
+				failed = true;
+				continue;
+			}
 		}
 		try {
 			auto result = RunSQL(context, row.sql);

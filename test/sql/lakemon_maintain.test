@@ -112,6 +112,7 @@ cleanup_old_files	skip
 expire_snapshots	error
 
 # PRAGMA is registered and uses the same plan + ExecutePlannedRows path as CALL.
+# Rewrite runs before active_query exists; missing ducklake is an error row, not INTERNAL.
 statement ok
 PRAGMA lakemon_maintain('no_such_lake');
 
@@ -134,11 +135,13 @@ CREATE VIEW lakemon_missing_view AS SELECT * FROM lakemon_maintain('no_such_lake
 ----
 CREATE
 
-# Parameter placeholder is the same bind path as C API / driver prepare.
+# Bare ? is refused before execute. Sqllogictest supplies no parameter values,
+# so DuckDB errors at bind ("parameter"); C API / driver prepare is covered
+# by the Postgres lake script.
 statement error
 SELECT * FROM lakemon_maintain(?, dry_run => false);
 ----
-prepared
+parameter
 
 statement ok
 BEGIN;
