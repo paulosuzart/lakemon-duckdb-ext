@@ -17,11 +17,18 @@
 #   (select the branch). Also runs automatically on push to main (1.5.5 + 2.x)
 #   unless the commit only changes markdown/docs, and on v* tags (all four
 #   versions). Path filters apply to branch pushes only, not to v* tags or
-#   workflow_dispatch.
+#   workflow_dispatch. pull_request runs 1.5.5 + 2.x when extension_config,
+#   vcpkg.json, or this workflow change (so a leaked extra extension is caught
+#   before merge).
 #
 name: Main Extension Distribution Pipeline
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'extension_config.cmake'
+      - 'vcpkg.json'
+      - '.github/workflows/MainDistributionPipeline.yml'
   push:
     branches:
       - main

@@ -9,7 +9,7 @@ This repository follows the C++ [extension-template](https://github.com/duckdb/e
    - `duckdb-1-5-3-build` / `duckdb-1-5-6-build` → matching `duckdb_version` + `ci_tools_version` (release/dispatch only)
    - `duckdb-2-build` → `v2.0-cyanoptera` / `main` until 2.0.0 is tagged
 4. Rebuild and run `make test` plus `make policy-test`.
-5. Before merge or a community listing submit, run **Actions → Main Extension Distribution Pipeline → Run workflow** on the branch (that workflow does not run on ordinary feature-branch pushes). Dispatch also builds the extra 1.5.3 and 1.5.6 matrices.
+5. Before merge or a community listing submit, run **Actions → Main Extension Distribution Pipeline → Run workflow** on the branch (that workflow does not run on ordinary feature-branch pushes). Dispatch also builds the extra 1.5.3 and 1.5.6 matrices. A pull request that changes `extension_config.cmake`, `vcpkg.json`, or the distribution workflow itself also runs the everyday 1.5.5 + 2.x matrices.
 
 ## Distribution matrix
 
