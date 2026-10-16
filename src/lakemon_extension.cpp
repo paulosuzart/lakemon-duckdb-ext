@@ -10,11 +10,17 @@
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/function_set.hpp"
+#include "duckdb/function/pragma_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/planner/binder.hpp"
 
 #include <exception>
 #include <new>
@@ -89,21 +95,24 @@ static string RequireCatalog(const Value &value) {
 	return catalog;
 }
 
-static void ParseNamedMaintain(TableFunctionBindInput &input, lakemon::MaintainOptions &options) {
-	for (auto &entry : input.named_parameters) {
+template <typename NamedMap>
+static void ParseNamedMaintainMap(const NamedMap &named, lakemon::MaintainOptions &options) {
+	for (auto &entry : named) {
 		if (entry.second.IsNull()) {
 			throw InvalidInputException("lakemon: named parameter cannot be NULL");
 		}
 		if (entry.first == "dry_run") {
 			options.dry_run = BooleanValue::Get(entry.second);
 		} else if (entry.first == "max_compacted_files") {
-			options.max_compacted_files = entry.second.GetValue<int64_t>();
+			// BigIntValue::Get avoids Value::GetValue<T> in a dependent context (C++11).
+			options.max_compacted_files = BigIntValue::Get(entry.second);
 		}
 	}
 }
 
-static void ParseNamedGlobalMaintain(TableFunctionBindInput &input, lakemon::GlobalMaintainOptions &options) {
-	for (auto &entry : input.named_parameters) {
+template <typename NamedMap>
+static void ParseNamedGlobalMaintainMap(const NamedMap &named, lakemon::GlobalMaintainOptions &options) {
+	for (auto &entry : named) {
 		if (entry.second.IsNull()) {
 			throw InvalidInputException("lakemon: named parameter cannot be NULL");
 		}
@@ -121,6 +130,25 @@ static void ParseNamedGlobalMaintain(TableFunctionBindInput &input, lakemon::Glo
 			options.delete_older_than_set = true;
 		}
 	}
+}
+
+static void ParseNamedMaintain(TableFunctionBindInput &input, lakemon::MaintainOptions &options) {
+	ParseNamedMaintainMap(input.named_parameters, options);
+}
+
+static void ParseNamedGlobalMaintain(TableFunctionBindInput &input, lakemon::GlobalMaintainOptions &options) {
+	ParseNamedGlobalMaintainMap(input.named_parameters, options);
+}
+
+static bool HasPreparedParameters(TableFunctionBindInput &input) {
+	if (!input.binder) {
+		return false;
+	}
+	auto param_map = input.binder->GetParameters();
+	if (!param_map) {
+		return false;
+	}
+	return !param_map->GetParameters().empty();
 }
 
 static void MaintainReturnTypes(vector<LogicalType> &return_types, lakemon::ColumnNameList &names) {
@@ -144,6 +172,109 @@ static lakemon::MaintainRow OrchestrateErrorRow(const char *step, const char *de
 	row.status = "error";
 	row.details = details;
 	return row;
+}
+
+static unique_ptr<TableRef> ParseSelectAsSubquery(ClientContext &context, const string &sql) {
+#if LAKEMON_DUCKDB_2
+	Parser parser(context);
+#else
+	(void)context;
+	Parser parser;
+#endif
+	parser.ParseQuery(sql);
+	if (parser.statements.size() != 1 || !parser.statements[0] ||
+	    parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+		throw InvalidInputException("lakemon: internal execute plan must be a single SELECT");
+	}
+	auto select = unique_ptr<SelectStatement>(static_cast<SelectStatement *>(parser.statements[0].release()));
+	return make_uniq<SubqueryRef>(std::move(select));
+}
+
+static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	lakemon::MaintainOptions options;
+	try {
+		ParseNamedMaintain(input, options);
+	} catch (const InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const Exception &) {
+		throw;
+	} catch (const std::exception &ex) {
+		throw InvalidInputException("lakemon: %s", lakemon::SafeWhat(ex));
+	}
+
+	if (!options.dry_run) {
+		lakemon::RequireMaintainExecute(context, HasPreparedParameters(input));
+	}
+
+	options.catalog = RequireCatalog(input.inputs[0]);
+	if (input.inputs.size() >= 2 && !input.inputs[1].IsNull()) {
+		options.table = lakemon::ParseTableRef(StringValue::Get(input.inputs[1]));
+	}
+
+	std::vector<lakemon::MaintainRow> rows;
+	try {
+		rows = lakemon::RunMaintain(context, options);
+	} catch (const InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const Exception &ex) {
+		rows.push_back(OrchestrateErrorRow("maintain", lakemon::SafeWhat(ex)));
+	} catch (const std::exception &ex) {
+		rows.push_back(OrchestrateErrorRow("maintain", lakemon::SafeWhat(ex)));
+	}
+
+	if (!options.dry_run) {
+		lakemon::ExecutePlannedRows(context, rows);
+	}
+	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
+	ref->alias = input.ref.alias;
+	ref->column_name_alias = input.ref.column_name_alias;
+	return ref;
+}
+
+static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	lakemon::GlobalMaintainOptions options;
+	try {
+		ParseNamedGlobalMaintain(input, options);
+	} catch (const InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const Exception &) {
+		throw;
+	} catch (const std::exception &ex) {
+		throw InvalidInputException("lakemon: %s", lakemon::SafeWhat(ex));
+	}
+
+	if (!options.dry_run) {
+		lakemon::RequireMaintainExecute(context, HasPreparedParameters(input));
+	}
+
+	options.catalog = RequireCatalog(input.inputs[0]);
+
+	std::vector<lakemon::MaintainRow> rows;
+	try {
+		rows = lakemon::RunGlobalMaintain(context, options);
+	} catch (const InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const Exception &ex) {
+		rows.push_back(OrchestrateErrorRow("maintain_global", lakemon::SafeWhat(ex)));
+	} catch (const std::exception &ex) {
+		rows.push_back(OrchestrateErrorRow("maintain_global", lakemon::SafeWhat(ex)));
+	}
+
+	if (!options.dry_run) {
+		lakemon::ExecutePlannedRows(context, rows);
+	}
+	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
+	ref->alias = input.ref.alias;
+	ref->column_name_alias = input.ref.column_name_alias;
+	return ref;
 }
 
 static unique_ptr<FunctionData> MaintainBind(ClientContext &, TableFunctionBindInput &input,
@@ -225,6 +356,57 @@ static unique_ptr<GlobalTableFunctionState> GlobalMaintainInit(ClientContext &co
 	}
 	FillMaintainRows(*state, rows);
 	return std::move(state);
+}
+
+static string MaintainPragmaQuery(ClientContext &context, const FunctionParameters &parameters) {
+	lakemon::MaintainOptions options;
+	options.catalog = RequireCatalog(parameters.values[0]);
+	if (parameters.values.size() >= 2 && !parameters.values[1].IsNull()) {
+		options.table = lakemon::ParseTableRef(StringValue::Get(parameters.values[1]));
+	}
+	ParseNamedMaintainMap(parameters.named_parameters, options);
+	try {
+		if (!options.dry_run) {
+			lakemon::RequireMaintainExecute(context);
+		}
+		auto rows = lakemon::RunMaintain(context, options);
+		if (!options.dry_run) {
+			lakemon::ExecutePlannedRows(context, rows);
+		}
+		return lakemon::BindReplaceQuery(rows, false);
+	} catch (const InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const Exception &) {
+		throw;
+	} catch (const std::exception &ex) {
+		throw InvalidInputException("lakemon: %s", lakemon::SafeWhat(ex));
+	}
+}
+
+static string GlobalMaintainPragmaQuery(ClientContext &context, const FunctionParameters &parameters) {
+	lakemon::GlobalMaintainOptions options;
+	options.catalog = RequireCatalog(parameters.values[0]);
+	ParseNamedGlobalMaintainMap(parameters.named_parameters, options);
+	try {
+		if (!options.dry_run) {
+			lakemon::RequireMaintainExecute(context);
+		}
+		auto rows = lakemon::RunGlobalMaintain(context, options);
+		if (!options.dry_run) {
+			lakemon::ExecutePlannedRows(context, rows);
+		}
+		return lakemon::BindReplaceQuery(rows, false);
+	} catch (const InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const Exception &) {
+		throw;
+	} catch (const std::exception &ex) {
+		throw InvalidInputException("lakemon: %s", lakemon::SafeWhat(ex));
+	}
 }
 
 static unique_ptr<FunctionData> StatsBind(ClientContext &, TableFunctionBindInput &input,
@@ -488,14 +670,16 @@ static void VersionFun(DataChunk &, ExpressionState &, Vector &result) {
 	lakemon::ReferenceScalar(result, Value("0.1.0"));
 }
 
-static void AddNamedMaintainParams(TableFunction &function) {
+template <typename FunctionT>
+static void AddNamedMaintainParams(FunctionT &function) {
 	lakemon::AddNamedParameters(function, {
 	    {"dry_run", LogicalType::BOOLEAN},
 	    {"max_compacted_files", LogicalType::BIGINT},
 	});
 }
 
-static void AddNamedGlobalMaintainParams(TableFunction &function) {
+template <typename FunctionT>
+static void AddNamedGlobalMaintainParams(FunctionT &function) {
 	lakemon::AddNamedParameters(function, {
 	    {"dry_run", LogicalType::BOOLEAN},
 	    {"skip_expire", LogicalType::BOOLEAN},
@@ -527,15 +711,18 @@ void LoadInternal(ExtensionLoader &loader) {
 
 	TableFunctionSet maintain("lakemon_maintain");
 	TableFunction maintain_one({LogicalType::VARCHAR}, EmitRows, MaintainBind, MaintainInit);
+	maintain_one.bind_replace = MaintainBindReplace;
 	AddNamedMaintainParams(maintain_one);
 	maintain.AddFunction(maintain_one);
 	TableFunction maintain_two({LogicalType::VARCHAR, LogicalType::VARCHAR}, EmitRows, MaintainBind, MaintainInit);
+	maintain_two.bind_replace = MaintainBindReplace;
 	AddNamedMaintainParams(maintain_two);
 	maintain.AddFunction(maintain_two);
 	loader.RegisterFunction(maintain);
 
 	TableFunctionSet maintain_global("lakemon_maintain_global");
 	TableFunction maintain_global_one({LogicalType::VARCHAR}, EmitRows, GlobalMaintainBind, GlobalMaintainInit);
+	maintain_global_one.bind_replace = GlobalMaintainBindReplace;
 	AddNamedGlobalMaintainParams(maintain_global_one);
 	maintain_global.AddFunction(maintain_global_one);
 	loader.RegisterFunction(maintain_global);
@@ -559,6 +746,29 @@ void LoadInternal(ExtensionLoader &loader) {
 	AddNamedSetPolicyParams(set_three);
 	set_policy.AddFunction(set_three);
 	loader.RegisterFunction(set_policy);
+
+	// Optional PRAGMA form: same plan + ExecutePlannedRows path as CALL.
+	// CALL / SELECT use bind_replace: plan, then ExecutePlannedRows (one
+	// committed DuckLake CALL each). Not table-function init. dry_run => false
+	// is allowed only for CALL / SELECT / FROM / WITH / PRAGMA in autocommit,
+	// and is refused when the binder has prepared-statement parameters.
+	PragmaFunctionSet maintain_pragma("lakemon_maintain");
+	auto maintain_pragma_one =
+	    PragmaFunction::PragmaCall("lakemon_maintain", MaintainPragmaQuery, {LogicalType::VARCHAR});
+	AddNamedMaintainParams(maintain_pragma_one);
+	maintain_pragma.AddFunction(maintain_pragma_one);
+	auto maintain_pragma_two = PragmaFunction::PragmaCall("lakemon_maintain", MaintainPragmaQuery,
+	                                                     {LogicalType::VARCHAR, LogicalType::VARCHAR});
+	AddNamedMaintainParams(maintain_pragma_two);
+	maintain_pragma.AddFunction(maintain_pragma_two);
+	loader.RegisterFunction(maintain_pragma);
+
+	PragmaFunctionSet maintain_global_pragma("lakemon_maintain_global");
+	auto maintain_global_pragma_one =
+	    PragmaFunction::PragmaCall("lakemon_maintain_global", GlobalMaintainPragmaQuery, {LogicalType::VARCHAR});
+	AddNamedGlobalMaintainParams(maintain_global_pragma_one);
+	maintain_global_pragma.AddFunction(maintain_global_pragma_one);
+	loader.RegisterFunction(maintain_global_pragma);
 }
 
 void LakemonExtension::Load(ExtensionLoader &loader) {

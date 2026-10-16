@@ -37,9 +37,27 @@ struct MaintainRow {
 	int64_t files_processed = 0;
 	int64_t files_created = 0;
 	std::string details;
+	// DuckLake / catalog SQL for this step. Empty for skip / inventory-only rows.
+	std::string sql;
 };
 
 std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const MaintainOptions &options);
 std::vector<MaintainRow> RunGlobalMaintain(duckdb::ClientContext &context, const GlobalMaintainOptions &options);
+
+// Table-function bind_replace / PRAGMA result: step-row VALUES. Execute is
+// ExecutePlannedRows (one committed statement per DuckLake CALL) because a
+// DuckLake transaction cannot mix data changes and compaction.
+std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute);
+
+// Refuse dry_run => false unless the statement is a plain CALL / SELECT /
+// FROM / WITH / PRAGMA in autocommit. Also refuses an explicit BEGIN and a
+// bind that has prepared-statement parameters (C API / driver prepare).
+void RequireMaintainExecute(duckdb::ClientContext &context, bool has_prepared_parameters = false);
+
+// Run each non-empty row.sql on a nested Connection (own commit). Fail-fast:
+// first error appends to details, marks later SQL rows skip / not-run, and
+// sets files_created from the CALL result row count. Interrupt rethrows so
+// the result rows are not returned; already-committed steps stay committed.
+void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows);
 
 } // namespace lakemon

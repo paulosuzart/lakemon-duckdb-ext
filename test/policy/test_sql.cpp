@@ -63,10 +63,10 @@ static void TestRewriteMergeKeepPositionalTableAndSchema() {
 
 static void TestGlobalRetentionCallsAreCatalogOnly() {
 	Expect(lakemon::ExpireSnapshotsCall("lake", "7 days") ==
-	           "CALL ducklake_expire_snapshots('lake', older_than => now() - INTERVAL '7 days')",
+	           "CALL ducklake_expire_snapshots('lake', older_than => now()::TIMESTAMP - INTERVAL '7 days')",
 	       "expire snapshots is catalog-global");
 	Expect(lakemon::CleanupOldFilesCall("lake", "3 days") ==
-	           "CALL ducklake_cleanup_old_files('lake', older_than => now() - INTERVAL '3 days')",
+	           "CALL ducklake_cleanup_old_files('lake', older_than => now()::TIMESTAMP - INTERVAL '3 days')",
 	       "cleanup uses older_than when set");
 	Expect(lakemon::CleanupOldFilesCall("lake", "") == "CALL ducklake_cleanup_old_files('lake', cleanup_all => true)",
 	       "cleanup_all when delete interval unset");
@@ -75,6 +75,63 @@ static void TestGlobalRetentionCallsAreCatalogOnly() {
 	Expect(!Contains(lakemon::ExpireSnapshotsCall("lake", "7 days"), "table"), "expire has no table argument");
 	Expect(!Contains(lakemon::FlushInlinedDataCall("lake", lakemon::ParseTableRef("s.t")), "expire"),
 	       "table flush CALL does not expire snapshots");
+}
+
+static void TestExpireIntervalBindsWithoutIcu() {
+	const std::string expire = lakemon::ExpireSnapshotsCall("lake", "7 days");
+	const std::string cleanup = lakemon::CleanupOldFilesCall("lake", "3 days");
+	Expect(Contains(expire, "now()::TIMESTAMP - INTERVAL '7 days'"),
+	       "expire older_than casts now() to TIMESTAMP");
+	Expect(Contains(cleanup, "now()::TIMESTAMP - INTERVAL '3 days'"),
+	       "cleanup older_than casts now() to TIMESTAMP");
+	Expect(!Contains(expire, "older_than => now() - INTERVAL"),
+	       "expire must not emit uncast now() - INTERVAL (needs ICU)");
+	Expect(!Contains(cleanup, "older_than => now() - INTERVAL"),
+	       "cleanup must not emit uncast now() - INTERVAL (needs ICU)");
+	Expect(lakemon::TimestampMinusInterval("7 days") == "now()::TIMESTAMP - INTERVAL '7 days'",
+	       "TimestampMinusInterval is the ICU-free older_than fragment");
+}
+
+static void TestExecuteGuardsRefuseBindOnlyAndBegin() {
+	Expect(lakemon::LeadingSQLKeyword("CALL lakemon_maintain('lake')") == "CALL", "plain CALL");
+	Expect(lakemon::LeadingSQLKeyword("  SELECT * FROM lakemon_maintain('lake')") == "SELECT", "SELECT");
+	Expect(lakemon::LeadingSQLKeyword("-- comment\nEXPLAIN CALL lakemon_maintain('lake')") == "EXPLAIN",
+	       "skips line comments");
+	Expect(lakemon::LeadingSQLKeyword("/* x */ (PREPARE p AS SELECT 1)") == "PREPARE", "skips block comments and parens");
+	Expect(lakemon::IsMaintainExecuteKeyword("CALL"), "CALL may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("SELECT"), "SELECT may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("FROM"), "FROM may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("WITH"), "WITH may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("PRAGMA"), "PRAGMA may execute");
+	Expect(!lakemon::IsMaintainExecuteKeyword("EXPLAIN"), "EXPLAIN is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("PREPARE"), "PREPARE is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("EXECUTE"), "EXECUTE is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("DESCRIBE"), "DESCRIBE is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("SUMMARIZE"), "SUMMARIZE is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("CREATE"), "CREATE VIEW is not an execute form");
+
+	std::string error;
+	Expect(!lakemon::MaintainExecuteRefused(true, "CALL lakemon_maintain('lake')", error),
+	       "autocommit CALL is allowed");
+	Expect(lakemon::MaintainExecuteRefused(false, "CALL lakemon_maintain('lake')", error),
+	       "explicit BEGIN is refused");
+	Expect(Contains(error, "explicit transaction"), "BEGIN error names the transaction");
+	Expect(Contains(error, "BEGIN"), "BEGIN error mentions BEGIN");
+	Expect(lakemon::MaintainExecuteRefused(true, "EXPLAIN SELECT * FROM lakemon_maintain('lake')", error),
+	       "EXPLAIN is refused");
+	Expect(Contains(error, "EXPLAIN"), "EXPLAIN error names the keyword");
+	Expect(lakemon::MaintainExecuteRefused(true, "PREPARE p AS SELECT * FROM lakemon_maintain('lake')", error),
+	       "PREPARE is refused");
+	Expect(Contains(error, "PREPARE"), "PREPARE error names the keyword");
+	Expect(lakemon::MaintainExecuteRefused(true, "EXECUTE p", error), "EXECUTE is refused");
+	Expect(lakemon::MaintainExecuteRefused(true, "CREATE VIEW v AS SELECT * FROM lakemon_maintain('lake')", error),
+	       "CREATE VIEW is refused");
+	Expect(Contains(error, "CREATE"), "CREATE VIEW error names the keyword");
+	Expect(!lakemon::MaintainExecuteRefused(true, "SELECT * FROM lakemon_maintain('lake', dry_run => false)", error),
+	       "plain SELECT is allowed");
+	Expect(lakemon::MaintainExecuteRefused(true, "SELECT * FROM lakemon_maintain(?, dry_run => false)", error, true),
+	       "prepared parameters are refused");
+	Expect(Contains(error, "prepared"), "parameter error names prepared statements");
 }
 
 static void TestRewriteCallNeverUsesZeroThreshold() {
@@ -95,6 +152,8 @@ int main() {
 	TestFlushMainAndEmptySchemaOmitSchemaName();
 	TestRewriteMergeKeepPositionalTableAndSchema();
 	TestGlobalRetentionCallsAreCatalogOnly();
+	TestExpireIntervalBindsWithoutIcu();
+	TestExecuteGuardsRefuseBindOnlyAndBegin();
 	TestRewriteCallNeverUsesZeroThreshold();
 	if (TestFailures()) {
 		std::cerr << TestFailures() << " failure(s)" << std::endl;

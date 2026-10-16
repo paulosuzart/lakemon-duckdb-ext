@@ -1,0 +1,162 @@
+# name: test/sql/lakemon_execute.test
+# description: execute flush+merge and expire against a file-backed DuckLake catalog
+# group: [sql]
+
+require lakemon
+
+require ducklake
+
+require parquet
+
+# File-backed catalog (no external database). A hang here is the nested-connection
+# deadlock regression; run via `make lake-test` (60s timeout) or `make test`.
+
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/lakemon_exec.ducklake' AS lake (DATA_PATH '__TEST_DIR__/lakemon_exec_data');
+
+statement ok
+CREATE SCHEMA lake.bronze_financial;
+
+statement ok
+CREATE TABLE lake.bronze_financial.subscription(id INTEGER, payload VARCHAR);
+
+statement ok
+INSERT INTO lake.bronze_financial.subscription VALUES (1, 'a'), (2, 'b');
+
+statement ok
+INSERT INTO lake.bronze_financial.subscription VALUES (3, 'c'), (4, 'd');
+
+# Plan-only still returns planned SQL without running DuckLake mutations.
+query I
+SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true)
+WHERE step = 'flush_inlined';
+----
+planned
+
+# Deadlock regression: CALL / SELECT with dry_run => false must execute from
+# bind_replace (not table-function init). One SELECT adds snapshots; a double
+# bind would add them twice. Exact 1:1 snapshot delta is asserted in the
+# Postgres script (it can count ok steps in the same process).
+statement ok
+CREATE TEMP TABLE lakemon_once_before AS SELECT count(*) AS snaps FROM ducklake_snapshots('lake');
+
+query I
+SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false)
+WHERE step = 'flush_inlined';
+----
+ok
+
+query I
+SELECT (SELECT count(*) FROM ducklake_snapshots('lake')) > (SELECT snaps FROM lakemon_once_before);
+----
+true
+
+query I
+SELECT count(*) FROM lake.bronze_financial.subscription;
+----
+4
+
+# Second pass after another small insert: flush again and merge if two files exist.
+statement ok
+INSERT INTO lake.bronze_financial.subscription VALUES (5, 'e'), (6, 'f');
+
+statement ok
+CALL lakemon_maintain('lake', 'bronze_financial.subscription');
+
+query I
+SELECT count(*) FROM lake.bronze_financial.subscription;
+----
+6
+
+# Expire snapshots older than now. skip_cleanup keeps data files.
+statement ok
+CALL lakemon_maintain_global('lake', expire_older_than => '0 days', skip_cleanup => true);
+
+query I
+SELECT count(*) FROM lake.bronze_financial.subscription;
+----
+6
+
+# Snapshot / file counts must not change under EXPLAIN, PREPARE, or BEGIN.
+# dry_run => false is refused there so bind cannot flush/merge/expire.
+statement ok
+CREATE TEMP TABLE lakemon_guard_before AS
+SELECT
+  (SELECT count(*) FROM ducklake_snapshots('lake')) AS snaps,
+  (SELECT count(*) FROM ducklake_list_files('lake', 'subscription', schema => 'bronze_financial')) AS files;
+
+statement ok
+EXPLAIN SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true);
+
+statement error
+EXPLAIN SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+EXPLAIN
+
+statement error
+EXPLAIN CALL lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+EXPLAIN
+
+statement error
+PREPARE lakemon_exec AS SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+PREPARE
+
+statement error
+EXECUTE lakemon_exec;
+----
+lakemon_exec
+
+statement error
+CREATE VIEW lakemon_view AS
+SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+CREATE
+
+# Same bind path as C API / Python / JDBC prepare with a parameter.
+statement error
+SELECT * FROM lakemon_maintain(?, dry_run => false);
+----
+prepared
+
+statement ok
+BEGIN;
+
+statement error
+CALL lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+explicit transaction
+
+statement ok
+ROLLBACK;
+
+# dry_run inside BEGIN is plan-only and must not mutate.
+statement ok
+BEGIN;
+
+statement ok
+SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true) WHERE step = 'flush_inlined';
+
+statement ok
+ROLLBACK;
+
+query II
+SELECT
+  snaps = (SELECT count(*) FROM ducklake_snapshots('lake')),
+  files = (SELECT count(*) FROM ducklake_list_files('lake', 'subscription', schema => 'bronze_financial'))
+FROM lakemon_guard_before;
+----
+true	true
+
+# A normal CALL in autocommit still executes exactly once (flush already done).
+query I
+SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false)
+WHERE step = 'flush_inlined';
+----
+ok
+
+query I
+SELECT lakemon_version();
+----
+0.1.0
