@@ -34,4 +34,4 @@ make postgres-lake-test
 
 `test/run_postgres_lake.py` attaches `ducklake:postgres:…`, seeds inlined rows + many small files + deletes, then `CALL lakemon_maintain(..., dry_run => false)` and `CALL lakemon_maintain_global(..., expire_older_than => '0 days')`. A 90s timeout treats a hang as failure. It asserts inlined rows were flushed, data files decreased after merge, and snapshot count dropped after expire.
 
-GitHub Actions workflow **Postgres lake execute** runs this on every pull request for DuckDB 1.5.5 and 2.x.
+GitHub Actions workflow **Postgres lake execute** runs this on every pull request for DuckDB 1.5.5, 1.5.6, and 2.x. It also checks that `EXPLAIN`, `PREPARE`, and `BEGIN` with `dry_run => false` error without changing snapshot or file counts.

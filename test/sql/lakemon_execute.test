@@ -33,8 +33,8 @@ WHERE step = 'flush_inlined';
 ----
 planned
 
-# Deadlock regression: CALL / SELECT with dry_run => false must execute in the
-# same query (bind_replace), not open a nested Connection to CALL ducklake_*.
+# Deadlock regression: CALL / SELECT with dry_run => false must execute from
+# bind_replace (not table-function init). One CALL runs the planned steps once.
 query I
 SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false)
 WHERE step = 'flush_inlined';
@@ -66,6 +66,73 @@ query I
 SELECT count(*) FROM lake.bronze_financial.subscription;
 ----
 6
+
+# Snapshot / file counts must not change under EXPLAIN, PREPARE, or BEGIN.
+# dry_run => false is refused there so bind cannot flush/merge/expire.
+statement ok
+CREATE TEMP TABLE lakemon_guard_before AS
+SELECT
+  (SELECT count(*) FROM ducklake_snapshots('lake')) AS snaps,
+  (SELECT count(*) FROM ducklake_list_files('lake', 'subscription', schema => 'bronze_financial')) AS files;
+
+statement ok
+EXPLAIN SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true);
+
+statement error
+EXPLAIN SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+EXPLAIN
+
+statement error
+EXPLAIN CALL lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+EXPLAIN
+
+statement error
+PREPARE lakemon_exec AS SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+PREPARE
+
+statement error
+EXECUTE lakemon_exec;
+----
+lakemon_exec
+
+statement ok
+BEGIN;
+
+statement error
+CALL lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+explicit transaction
+
+statement ok
+ROLLBACK;
+
+# dry_run inside BEGIN is plan-only and must not mutate.
+statement ok
+BEGIN;
+
+statement ok
+SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true) WHERE step = 'flush_inlined';
+
+statement ok
+ROLLBACK;
+
+query II
+SELECT
+  snaps = (SELECT count(*) FROM ducklake_snapshots('lake')),
+  files = (SELECT count(*) FROM ducklake_list_files('lake', 'subscription', schema => 'bronze_financial'))
+FROM lakemon_guard_before;
+----
+true	true
+
+# A normal CALL in autocommit still executes exactly once (flush already done).
+query I
+SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false)
+WHERE step = 'flush_inlined';
+----
+ok
 
 query I
 SELECT lakemon_version();

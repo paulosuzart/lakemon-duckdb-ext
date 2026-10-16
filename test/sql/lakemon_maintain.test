@@ -102,18 +102,43 @@ WHERE step = 'expire_snapshots' AND details LIKE '%now()::TIMESTAMP - INTERVAL%'
 ----
 1
 
-# Execute without an attached catalog is a statement error (same-plan DuckLake TF).
-statement error
-SELECT * FROM lakemon_maintain_global('no_such_lake', expire_older_than => '7 days', skip_cleanup => true);
-
-# PRAGMA is registered. Missing catalog / unloaded ducklake is a statement error.
-statement error
-PRAGMA lakemon_maintain('no_such_lake');
+# Execute without an attached catalog: expire CALL fails; skip_cleanup is skip.
+query II
+SELECT step, status FROM lakemon_maintain_global('no_such_lake', expire_older_than => '7 days', skip_cleanup => true)
+WHERE step IN ('expire_snapshots', 'cleanup_old_files')
+ORDER BY step;
 ----
-lakemon:
+cleanup_old_files	skip
+expire_snapshots	error
+
+# PRAGMA is registered and uses the same plan + ExecutePlannedRows path as CALL.
+statement ok
+PRAGMA lakemon_maintain('no_such_lake');
+
+statement ok
+PRAGMA lakemon_maintain_global('no_such_lake', expire_older_than='7 days', skip_cleanup=true);
+
+# EXPLAIN / PREPARE / BEGIN refuse dry_run => false even with no catalog.
+statement error
+EXPLAIN SELECT * FROM lakemon_maintain('no_such_lake', dry_run => false);
+----
+EXPLAIN
 
 statement error
-PRAGMA lakemon_maintain_global('no_such_lake', expire_older_than='7 days', skip_cleanup=true);
+PREPARE lakemon_missing AS SELECT * FROM lakemon_maintain_global('no_such_lake', dry_run => false);
+----
+PREPARE
+
+statement ok
+BEGIN;
+
+statement error
+CALL lakemon_maintain('no_such_lake', dry_run => false);
+----
+explicit transaction
+
+statement ok
+ROLLBACK;
 
 
 # Table-only knobs do not bind on the global CALL.

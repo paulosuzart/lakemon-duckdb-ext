@@ -1,6 +1,7 @@
 // Maintain pipeline rules. Header-only so the contract can be tested without DuckDB.
 #pragma once
 
+#include <cctype>
 #include <string>
 
 namespace lakemon {
@@ -31,8 +32,80 @@ inline bool GlobalMaintainIncludesTableWork() {
 // CALL on a nested Connection (own commit). DuckLake forbids mixing data
 // changes and compaction in one transaction, so one-query CTE execute cannot
 // flush + set_option + merge together. Not table-function init (that deadlocks).
+// dry_run => false is refused under EXPLAIN / PREPARE / EXECUTE / DESCRIBE /
+// SUMMARIZE (bind without a single execution, or rebind) and inside BEGIN.
 inline bool TableFunctionRunsDuckLakeCalls() {
 	return true;
+}
+
+// First SQL keyword after whitespace, opening parens, and comments.
+inline std::string LeadingSQLKeyword(const std::string &query) {
+	size_t i = 0;
+	const size_t n = query.size();
+	while (i < n) {
+		const unsigned char c = static_cast<unsigned char>(query[i]);
+		if (std::isspace(c) || query[i] == '(') {
+			i++;
+			continue;
+		}
+		if (query[i] == '-' && i + 1 < n && query[i + 1] == '-') {
+			i += 2;
+			while (i < n && query[i] != '\n') {
+				i++;
+			}
+			continue;
+		}
+		if (query[i] == '/' && i + 1 < n && query[i + 1] == '*') {
+			i += 2;
+			while (i + 1 < n && !(query[i] == '*' && query[i + 1] == '/')) {
+				i++;
+			}
+			if (i + 1 < n) {
+				i += 2;
+			}
+			continue;
+		}
+		break;
+	}
+	const size_t start = i;
+	while (i < n) {
+		const unsigned char c = static_cast<unsigned char>(query[i]);
+		if (std::isalpha(c) || c == '_') {
+			i++;
+		} else {
+			break;
+		}
+	}
+	std::string keyword = query.substr(start, i - start);
+	for (size_t k = 0; k < keyword.size(); k++) {
+		if (keyword[k] >= 'a' && keyword[k] <= 'z') {
+			keyword[k] = static_cast<char>(keyword[k] - 'a' + 'A');
+		}
+	}
+	return keyword;
+}
+
+inline bool IsBindOnlySQLKeyword(const std::string &keyword) {
+	return keyword == "EXPLAIN" || keyword == "PREPARE" || keyword == "EXECUTE" || keyword == "DESCRIBE" ||
+	       keyword == "SUMMARIZE";
+}
+
+// True when dry_run => false must be refused. error is a complete lakemon: message.
+inline bool MaintainExecuteRefused(bool auto_commit, const std::string &query, std::string &error) {
+	if (!auto_commit) {
+		error = "lakemon: dry_run => false is not allowed inside an explicit transaction "
+		        "(BEGIN). Commit first, or use dry_run => true. Nested execute would wait "
+		        "on the catalog lock held by this transaction.";
+		return true;
+	}
+	const std::string keyword = LeadingSQLKeyword(query);
+	if (IsBindOnlySQLKeyword(keyword)) {
+		error = "lakemon: dry_run => false cannot run under " + keyword +
+		        " (that binds without a single execution, or rebinds). "
+		        "Use a plain CALL or SELECT in autocommit, or dry_run => true.";
+		return true;
+	}
+	return false;
 }
 
 // Prior skip semantics, now on CALL lakemon_maintain_global.

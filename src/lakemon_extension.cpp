@@ -210,6 +210,7 @@ static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFun
 	}
 
 	if (!options.dry_run) {
+		lakemon::RequireMaintainExecute(context);
 		lakemon::ExecutePlannedRows(context, rows);
 	}
 	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
@@ -247,6 +248,7 @@ static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, Ta
 	}
 
 	if (!options.dry_run) {
+		lakemon::RequireMaintainExecute(context);
 		lakemon::ExecutePlannedRows(context, rows);
 	}
 	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
@@ -343,10 +345,15 @@ static string MaintainPragmaQuery(ClientContext &context, const FunctionParamete
 		options.table = lakemon::ParseTableRef(StringValue::Get(parameters.values[1]));
 	}
 	ParseNamedMaintainMap(parameters.named_parameters, options);
-	const bool execute = !options.dry_run;
 	try {
-		const auto rows = lakemon::RunMaintain(context, options);
-		return lakemon::ExecuteScriptFromRows(rows, execute);
+		if (!options.dry_run) {
+			lakemon::RequireMaintainExecute(context);
+		}
+		auto rows = lakemon::RunMaintain(context, options);
+		if (!options.dry_run) {
+			lakemon::ExecutePlannedRows(context, rows);
+		}
+		return lakemon::BindReplaceQuery(rows, false);
 	} catch (const InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {
@@ -362,10 +369,15 @@ static string GlobalMaintainPragmaQuery(ClientContext &context, const FunctionPa
 	lakemon::GlobalMaintainOptions options;
 	options.catalog = RequireCatalog(parameters.values[0]);
 	ParseNamedGlobalMaintainMap(parameters.named_parameters, options);
-	const bool execute = !options.dry_run;
 	try {
-		const auto rows = lakemon::RunGlobalMaintain(context, options);
-		return lakemon::ExecuteScriptFromRows(rows, execute);
+		if (!options.dry_run) {
+			lakemon::RequireMaintainExecute(context);
+		}
+		auto rows = lakemon::RunGlobalMaintain(context, options);
+		if (!options.dry_run) {
+			lakemon::ExecutePlannedRows(context, rows);
+		}
+		return lakemon::BindReplaceQuery(rows, false);
 	} catch (const InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {
@@ -715,9 +727,11 @@ void LoadInternal(ExtensionLoader &loader) {
 	set_policy.AddFunction(set_three);
 	loader.RegisterFunction(set_policy);
 
-	// Optional PRAGMA form: replacement-query execute (same result as CALL).
+	// Optional PRAGMA form: same plan + ExecutePlannedRows path as CALL.
 	// CALL / SELECT use bind_replace: plan, then ExecutePlannedRows (one
-	// committed DuckLake CALL each). Not table-function init.
+	// committed DuckLake CALL each). Not table-function init. dry_run => false
+	// is refused under EXPLAIN / PREPARE / EXECUTE / DESCRIBE / SUMMARIZE and
+	// inside an explicit BEGIN.
 	PragmaFunctionSet maintain_pragma("lakemon_maintain");
 	auto maintain_pragma_one =
 	    PragmaFunction::PragmaCall("lakemon_maintain", MaintainPragmaQuery, {LogicalType::VARCHAR});

@@ -277,6 +277,55 @@ def seed(session: LakeSession) -> None:
 	)
 
 
+def expect_refused(session: LakeSession, sql: str, needle: str, label: str, timeout: int) -> None:
+	try:
+		session.run(sql, timeout=timeout)
+	except Failed as exc:
+		text = str(exc)
+		if "TIMEOUT" in text:
+			raise
+		if needle not in text:
+			raise Failed(f"{label} error should mention {needle!r}:\n{text}")
+		return
+	raise Failed(f"{label} should have been refused")
+
+
+def assert_execute_guards(session: LakeSession, timeout: int) -> None:
+	snaps = count_snapshots(session)
+	files = count_files(session)
+	inlined = count_inlined_rows(session)
+	print(f"before execute guards: snapshots={snaps} files={files} inlined_rows={inlined}")
+	expect_refused(
+		session,
+		f"EXPLAIN SELECT * FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false);",
+		"EXPLAIN",
+		"EXPLAIN dry_run => false",
+		timeout,
+	)
+	expect_refused(
+		session,
+		f"PREPARE lakemon_exec AS SELECT * FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', "
+		f"dry_run => false);",
+		"PREPARE",
+		"PREPARE dry_run => false",
+		timeout,
+	)
+	expect_refused(
+		session,
+		f"BEGIN;\nCALL lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false);",
+		"explicit transaction",
+		"BEGIN dry_run => false",
+		timeout,
+	)
+	if count_snapshots(session) != snaps:
+		raise Failed(f"guards changed snapshots: {snaps} -> {count_snapshots(session)}")
+	if count_files(session) != files:
+		raise Failed(f"guards changed files: {files} -> {count_files(session)}")
+	if count_inlined_rows(session) != inlined:
+		raise Failed(f"guards changed inlined rows: {inlined} -> {count_inlined_rows(session)}")
+	print(f"execute guards ok: snapshots={snaps} files={files} inlined_rows={inlined}")
+
+
 def execute_maintain(session: LakeSession, timeout: int) -> None:
 	rows_before = count_rows(session)
 	files_before = count_files(session)
@@ -290,7 +339,7 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 		raise Failed(f"setup did not keep many small files before maintain (files={files_before})")
 
 	rows = session.query_rows(
-		f"SELECT step, action, status FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false) "
+		f"SELECT step, action, status, files_created FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false) "
 		f"WHERE step IN ('flush_inlined', 'merge') ORDER BY step, action;",
 		timeout=timeout,
 	)
@@ -370,6 +419,7 @@ def main() -> int:
 	session = LakeSession(str(duckdb), args.pg, data_path, [postgres_load, ducklake_load, lakemon_load])
 	try:
 		seed(session)
+		assert_execute_guards(session, args.timeout)
 		execute_maintain(session, args.timeout)
 		execute_expire(session, args.timeout)
 	except Failed as exc:

@@ -7,6 +7,7 @@
 #include "lakemon_store.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include <exception>
 #include <new>
@@ -62,35 +63,6 @@ static std::string PlanRowsSelect(const std::vector<MaintainRow> &rows, bool exe
 	return sql.str();
 }
 
-std::string ExecuteScriptFromRows(const std::vector<MaintainRow> &rows, bool execute) {
-	if (!execute) {
-		return PlanRowsSelect(rows, false);
-	}
-	std::ostringstream script;
-	bool any_sql = false;
-	for (const auto &row : rows) {
-		if (row.sql.empty()) {
-			continue;
-		}
-		script << row.sql;
-		if (row.sql.back() != ';') {
-			script << ';';
-		}
-		script << '\n';
-		any_sql = true;
-	}
-	if (!any_sql) {
-		for (const auto &row : rows) {
-			if (row.status == "error") {
-				throw duckdb::InvalidInputException("%s",
-				                                    row.details.empty() ? "lakemon: plan error" : row.details.c_str());
-			}
-		}
-	}
-	script << PlanRowsSelect(rows, true);
-	return script.str();
-}
-
 static void AppendRewriteSkips(std::vector<MaintainRow> &rows, const policy::TableHint &hint, const std::string &reason) {
 	if (hint.rewrite_steps.empty()) {
 		rows.push_back(MakeRow("rewrite", hint.schema_name, hint.table_name, "none", "skip",
@@ -108,27 +80,59 @@ std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute)
 	return PlanRowsSelect(rows, execute);
 }
 
+void RequireMaintainExecute(duckdb::ClientContext &context) {
+	std::string error;
+	if (MaintainExecuteRefused(context.transaction.IsAutoCommit(), context.GetCurrentQuery(), error)) {
+		throw duckdb::InvalidInputException("%s", error.c_str());
+	}
+}
+
+static void AppendDetails(MaintainRow &row, const std::string &suffix) {
+	if (row.details.empty()) {
+		row.details = suffix;
+		return;
+	}
+	row.details += " | ";
+	row.details += suffix;
+}
+
 void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows) {
+	bool failed = false;
+	bool interrupted = false;
 	for (auto &row : rows) {
 		if (row.sql.empty()) {
 			continue;
 		}
+		if (failed) {
+			row.status = "skip";
+			AppendDetails(row, interrupted ? "not run: interrupted" : "not run: previous step failed");
+			continue;
+		}
 		try {
-			RunSQL(context, row.sql);
+			auto result = RunSQL(context, row.sql);
 			row.status = "ok";
+			if (result) {
+				row.files_created = ResultRowCount(*result);
+			}
 		} catch (const duckdb::InterruptException &) {
-			throw;
+			row.status = "error";
+			AppendDetails(row, "interrupted");
+			failed = true;
+			interrupted = true;
 		} catch (const std::bad_alloc &) {
 			throw;
 		} catch (const Exception &ex) {
 			row.status = "error";
-			row.details = SafeWhat(ex);
-			break;
+			AppendDetails(row, SafeWhat(ex));
+			failed = true;
 		} catch (const std::exception &ex) {
 			row.status = "error";
-			row.details = SafeWhat(ex);
-			break;
+			AppendDetails(row, SafeWhat(ex));
+			failed = true;
 		}
+	}
+	if (interrupted) {
+		throw duckdb::InterruptException();
 	}
 }
 
@@ -136,10 +140,10 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 // against an unread catalog). Unread per-table metadata: status=error diagnostic
 // rows; continue with tables that were read. This function only plans: flush,
 // rewrite, and merge SQL is returned as status=planned. bind_replace (CALL /
-// SELECT) and PRAGMA run each CALL as its own committed statement.
-// Expire / old-file / orphan cleanup are not part of this plan (see
-// RunGlobalMaintain). InterruptException and bad_alloc rethrow. The session
-// stays usable.
+// SELECT) and PRAGMA run each CALL as its own committed statement after
+// RequireMaintainExecute. Expire / old-file / orphan cleanup are not part of
+// this plan (see RunGlobalMaintain). InterruptException and bad_alloc rethrow.
+// The session stays usable.
 std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const MaintainOptions &options) {
 	std::vector<MaintainRow> rows;
 	std::vector<policy::FileStat> files;

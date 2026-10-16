@@ -133,6 +133,22 @@ inline double CellDouble(QueryHandle &result, duckdb::idx_t col, duckdb::idx_t r
 	}
 }
 
+// Row count of a successful DuckLake CALL result. 1.5 MaterializedQueryResult
+// and 2.x QueryResult both expose RowCount() after materialize.
+inline int64_t ResultRowCount(QueryHandle &result) {
+	try {
+		return static_cast<int64_t>(result.RowCount());
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		return 0;
+	} catch (const std::exception &) {
+		return 0;
+	}
+}
+
 inline int64_t CellInt64(QueryHandle &result, duckdb::idx_t col, duckdb::idx_t row, int64_t fallback = 0) {
 	const duckdb::Value value = CellAt(result, col, row);
 	if (value.IsNull()) {

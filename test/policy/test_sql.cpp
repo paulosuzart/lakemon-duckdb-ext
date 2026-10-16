@@ -92,23 +92,38 @@ static void TestExpireIntervalBindsWithoutIcu() {
 	       "TimestampMinusInterval is the ICU-free older_than fragment");
 }
 
-static void TestSamePlanExecuteInlinesDuckLakeTableFunctions() {
-	const std::string plan = "SELECT 'ok' AS status";
-	Expect(lakemon::CallStatementToTableFunction("CALL ducklake_flush_inlined_data('lake')") ==
-	           "ducklake_flush_inlined_data('lake')",
-	       "CALL keyword is stripped for a FROM table-function item");
-	Expect(lakemon::SamePlanExecuteSelect(plan, {}) == plan, "no calls stays a plan SELECT");
+static void TestExecuteGuardsRefuseBindOnlyAndBegin() {
+	Expect(lakemon::LeadingSQLKeyword("CALL lakemon_maintain('lake')") == "CALL", "plain CALL");
+	Expect(lakemon::LeadingSQLKeyword("  SELECT * FROM lakemon_maintain('lake')") == "SELECT", "SELECT");
+	Expect(lakemon::LeadingSQLKeyword("-- comment\nEXPLAIN CALL lakemon_maintain('lake')") == "EXPLAIN",
+	       "skips line comments");
+	Expect(lakemon::LeadingSQLKeyword("/* x */ (PREPARE p AS SELECT 1)") == "PREPARE", "skips block comments and parens");
+	Expect(lakemon::IsBindOnlySQLKeyword("EXPLAIN"), "EXPLAIN is bind-only");
+	Expect(lakemon::IsBindOnlySQLKeyword("PREPARE"), "PREPARE is bind-only");
+	Expect(lakemon::IsBindOnlySQLKeyword("EXECUTE"), "EXECUTE is bind-only");
+	Expect(lakemon::IsBindOnlySQLKeyword("DESCRIBE"), "DESCRIBE is bind-only");
+	Expect(lakemon::IsBindOnlySQLKeyword("SUMMARIZE"), "SUMMARIZE is bind-only");
+	Expect(!lakemon::IsBindOnlySQLKeyword("CALL"), "CALL may execute");
+	Expect(!lakemon::IsBindOnlySQLKeyword("SELECT"), "SELECT may execute");
+	Expect(!lakemon::IsBindOnlySQLKeyword("WITH"), "WITH may execute");
+	Expect(!lakemon::IsBindOnlySQLKeyword("PRAGMA"), "PRAGMA may execute");
 
-	const auto sql = lakemon::SamePlanExecuteSelect(
-	    plan, {"CALL ducklake_flush_inlined_data('lake')", "CALL ducklake_merge_adjacent_files('lake', 't')"});
-	Expect(Contains(sql, "AS MATERIALIZED"), "MATERIALIZED CTEs keep steps sequential");
-	Expect(Contains(sql, "FROM ducklake_flush_inlined_data('lake')"), "flush is a same-plan table function");
-	Expect(Contains(sql, "FROM ducklake_merge_adjacent_files('lake', 't')"), "merge is a same-plan table function");
-	Expect(Contains(sql, "WHERE (SELECT c FROM lakemon_step_0) IS NOT NULL"),
-	       "later steps depend on the previous count");
-	Expect(!Contains(sql, "CALL ducklake_"), "same-plan SQL does not open a nested CALL statement");
-	Expect(Contains(sql, "SELECT lakemon_plan.* FROM"), "DuckLake CTE counts are not result columns");
-	Expect(Contains(sql, "CROSS JOIN lakemon_step_0"), "plan rows stay after the DuckLake steps");
+	std::string error;
+	Expect(!lakemon::MaintainExecuteRefused(true, "CALL lakemon_maintain('lake')", error),
+	       "autocommit CALL is allowed");
+	Expect(lakemon::MaintainExecuteRefused(false, "CALL lakemon_maintain('lake')", error),
+	       "explicit BEGIN is refused");
+	Expect(Contains(error, "explicit transaction"), "BEGIN error names the transaction");
+	Expect(Contains(error, "BEGIN"), "BEGIN error mentions BEGIN");
+	Expect(lakemon::MaintainExecuteRefused(true, "EXPLAIN SELECT * FROM lakemon_maintain('lake')", error),
+	       "EXPLAIN is refused");
+	Expect(Contains(error, "EXPLAIN"), "EXPLAIN error names the keyword");
+	Expect(lakemon::MaintainExecuteRefused(true, "PREPARE p AS SELECT * FROM lakemon_maintain('lake')", error),
+	       "PREPARE is refused");
+	Expect(Contains(error, "PREPARE"), "PREPARE error names the keyword");
+	Expect(lakemon::MaintainExecuteRefused(true, "EXECUTE p", error), "EXECUTE is refused");
+	Expect(!lakemon::MaintainExecuteRefused(true, "SELECT * FROM lakemon_maintain('lake', dry_run => false)", error),
+	       "plain SELECT is allowed");
 }
 
 static void TestRewriteCallNeverUsesZeroThreshold() {
@@ -130,7 +145,7 @@ int main() {
 	TestRewriteMergeKeepPositionalTableAndSchema();
 	TestGlobalRetentionCallsAreCatalogOnly();
 	TestExpireIntervalBindsWithoutIcu();
-	TestSamePlanExecuteInlinesDuckLakeTableFunctions();
+	TestExecuteGuardsRefuseBindOnlyAndBegin();
 	TestRewriteCallNeverUsesZeroThreshold();
 	if (TestFailures()) {
 		std::cerr << TestFailures() << " failure(s)" << std::endl;

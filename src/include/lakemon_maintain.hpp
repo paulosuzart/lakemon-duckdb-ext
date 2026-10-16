@@ -44,17 +44,19 @@ struct MaintainRow {
 std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const MaintainOptions &options);
 std::vector<MaintainRow> RunGlobalMaintain(duckdb::ClientContext &context, const GlobalMaintainOptions &options);
 
-// PRAGMA replacement: planned DuckLake statements (when execute) plus a final
-// SELECT of step rows. DuckDB runs that string as the query itself.
-std::string ExecuteScriptFromRows(const std::vector<MaintainRow> &rows, bool execute);
-
-// Table-function bind_replace result: step-row VALUES. Execute is
+// Table-function bind_replace / PRAGMA result: step-row VALUES. Execute is
 // ExecutePlannedRows (one committed statement per DuckLake CALL) because a
 // DuckLake transaction cannot mix data changes and compaction.
 std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute);
 
+// Refuse dry_run => false under EXPLAIN / PREPARE / EXECUTE / DESCRIBE /
+// SUMMARIZE, or inside an explicit (non-autocommit) transaction.
+void RequireMaintainExecute(duckdb::ClientContext &context);
+
 // Run each non-empty row.sql on a nested Connection (own commit). Fail-fast:
-// first error sets that row to status=error and leaves later SQL unrun.
+// first error appends to details, marks later SQL rows skip / not-run, and
+// sets files_created from the CALL result row count. Interrupt marks the
+// remaining SQL rows then rethrows (already-committed steps stay committed).
 void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows);
 
 } // namespace lakemon

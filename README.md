@@ -95,7 +95,7 @@ See [community/README.md](community/README.md) for the remaining listing steps.
 
 `CALL` / `SELECT * FROM lakemon_maintain(...)` (and the `_global` form) **plan and execute** by default. `dry_run => true` returns the plan only.
 
-Execute does not open a nested `Connection` from table-function **init** (that waits on the catalog/transaction lock held by the outer query and hangs). `bind_replace` plans, then runs each planned DuckLake `CALL` on a nested `Connection` so each statement commits on its own. DuckLake rejects a single transaction that both changes data (flush, `set_option`) and compact (merge / expire). An optional `PRAGMA lakemon_maintain(...)` expands to the same statements as a replacement query.
+Execute does not open a nested `Connection` from table-function **init** (that waits on the catalog/transaction lock held by the outer query and hangs). `bind_replace` plans, then runs each planned DuckLake `CALL` on a nested `Connection` so each statement commits on its own. DuckLake rejects a single transaction that both changes data (flush, `set_option`) and compact (merge / expire). `dry_run => false` is refused under `EXPLAIN` / `PREPARE` / `EXECUTE` / `DESCRIBE` / `SUMMARIZE` (those bind without a single execution, or rebind) and inside an explicit `BEGIN` (nested commits would wait on the outer catalog lock). An optional `PRAGMA lakemon_maintain(...)` uses the same plan-and-execute path as `CALL`.
 
 ### Table pass: `lakemon_maintain`
 
@@ -202,9 +202,9 @@ Table work only: inventory, flush, rewrite, merge. Does **not** expire snapshots
 
 Result columns: `step`, `schema_name`, `table_name`, `action`, `status`, `files_processed`, `files_created`, `details`.
 
-`dry_run => true` sets `status=planned` and appends the generated SQL in `details`. Execute sets `status=ok` for steps that ran. Rewrite emits **one result row per planned rung** (`action` is `rung_1` / `rung_2` / …, or `catalog` when DuckLake `rewrite_delete_threshold` is set). `details` always includes `band`, `delete_threshold`, `planned_files`, `planned_bytes`, and `planned_deletes`. `files_processed` is that rung's planned file count. `auto_compact` skips still list each computed rung.
+`dry_run => true` sets `status=planned` and appends the generated SQL in `details`. Execute sets `status=ok` for steps that ran. Rewrite emits **one result row per planned rung** (`action` is `rung_1` / `rung_2` / …, or `catalog` when DuckLake `rewrite_delete_threshold` is set). `details` always includes `band`, `delete_threshold`, `planned_files`, `planned_bytes`, and `planned_deletes`. `files_processed` is that rung's planned file count. `files_created` is the row count returned by that DuckLake `CALL` (typically one row per created file; `0` when the CALL returns no rows). `auto_compact` skips still list each computed rung.
 
-Execute plans, then runs each non-skip DuckLake `CALL` as its own committed statement. A failed step stops the rest of the batch and surfaces as a DuckDB error; the session stays usable. Unread per-table metadata is an inventory `error` row (not a silent drop); tables that were read still proceed. A total inventory failure stops the plan. Interrupt and out-of-memory are not swallowed.
+Execute plans, then runs each non-skip DuckLake `CALL` as its own committed statement. A failed step keeps its planned SQL in `details`, appends the error, sets `status=error`, and marks later SQL steps `skip` with `not run: previous step failed`. The session stays usable. Interrupt cancels the query after marking remaining SQL steps; steps that already committed stay committed. Unread per-table metadata is an inventory `error` row (not a silent drop); tables that were read still proceed. A total inventory failure stops the plan. Out-of-memory is not swallowed.
 
 ### `CALL lakemon_maintain_global(catalog)`
 
