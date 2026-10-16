@@ -7,9 +7,9 @@ namespace lakemon {
 
 // After inventory succeeds, flush / rewrite / merge are planned independently.
 // Only a hard inventory failure stops the table pipeline before rewrite/merge.
-// PRAGMA execute is fail-fast (a failed statement stops the rest of the batch).
-// Expire, old-file cleanup, and orphan delete are catalog-global and live in
-// lakemon_maintain_global, not lakemon_maintain.
+// Execute (CALL / SELECT / PRAGMA) is fail-fast: a failed DuckLake step stops
+// the rest of the batch. Expire, old-file cleanup, and orphan delete are
+// catalog-global and live in lakemon_maintain_global, not lakemon_maintain.
 inline bool InventoryFailureStopsPipeline() {
 	return true;
 }
@@ -27,10 +27,10 @@ inline bool GlobalMaintainIncludesTableWork() {
 	return false;
 }
 
-// Table-function CALL / SELECT only plans. Mutations run as PRAGMA replacement
-// SQL (the official way to execute statements outside the outer TF transaction).
+// CALL / SELECT bind_replace inlines DuckLake table functions into the same
+// query plan (same ClientContext / transaction). No nested Connection.
 inline bool TableFunctionRunsDuckLakeCalls() {
-	return false;
+	return true;
 }
 
 // Prior skip semantics, now on CALL lakemon_maintain_global.

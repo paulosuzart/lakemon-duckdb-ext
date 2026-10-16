@@ -104,13 +104,28 @@ static void AppendRewriteSkips(std::vector<MaintainRow> &rows, const policy::Tab
 	}
 }
 
+std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute) {
+	const std::string plan = PlanRowsSelect(rows, execute);
+	if (!execute) {
+		return plan;
+	}
+	std::vector<std::string> calls;
+	for (const auto &row : rows) {
+		if (!row.sql.empty()) {
+			calls.push_back(row.sql);
+		}
+	}
+	return SamePlanExecuteSelect(plan, calls);
+}
+
 // Inventory hard-failure: status=error row(s), then stop (do not plan rewrite/merge
 // against an unread catalog). Unread per-table metadata: status=error diagnostic
 // rows; continue with tables that were read. This function only plans: flush,
-// rewrite, and merge SQL is returned as status=planned. PRAGMA lakemon_maintain
-// runs that SQL as replacement statements. Expire / old-file / orphan cleanup
-// are not part of this plan (see RunGlobalMaintain). InterruptException and
-// bad_alloc rethrow. The session stays usable.
+// rewrite, and merge SQL is returned as status=planned. bind_replace (CALL /
+// SELECT) and PRAGMA run that SQL on the same query, not a nested Connection.
+// Expire / old-file / orphan cleanup are not part of this plan (see
+// RunGlobalMaintain). InterruptException and bad_alloc rethrow. The session
+// stays usable.
 std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const MaintainOptions &options) {
 	std::vector<MaintainRow> rows;
 	std::vector<policy::FileStat> files;

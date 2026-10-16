@@ -92,6 +92,25 @@ static void TestExpireIntervalBindsWithoutIcu() {
 	       "TimestampMinusInterval is the ICU-free older_than fragment");
 }
 
+static void TestSamePlanExecuteInlinesDuckLakeTableFunctions() {
+	const std::string plan = "SELECT 'ok' AS status";
+	Expect(lakemon::CallStatementToTableFunction("CALL ducklake_flush_inlined_data('lake')") ==
+	           "ducklake_flush_inlined_data('lake')",
+	       "CALL keyword is stripped for a FROM table-function item");
+	Expect(lakemon::SamePlanExecuteSelect(plan, {}) == plan, "no calls stays a plan SELECT");
+
+	const auto sql = lakemon::SamePlanExecuteSelect(
+	    plan, {"CALL ducklake_flush_inlined_data('lake')", "CALL ducklake_merge_adjacent_files('lake', 't')"});
+	Expect(Contains(sql, "AS MATERIALIZED"), "MATERIALIZED CTEs keep steps sequential");
+	Expect(Contains(sql, "FROM ducklake_flush_inlined_data('lake')"), "flush is a same-plan table function");
+	Expect(Contains(sql, "FROM ducklake_merge_adjacent_files('lake', 't')"), "merge is a same-plan table function");
+	Expect(Contains(sql, "WHERE (SELECT c FROM lakemon_step_0) IS NOT NULL"),
+	       "later steps depend on the previous count");
+	Expect(!Contains(sql, "CALL ducklake_"), "same-plan SQL does not open a nested CALL statement");
+	Expect(Contains(sql, "SELECT lakemon_plan.* FROM"), "DuckLake CTE counts are not result columns");
+	Expect(Contains(sql, "CROSS JOIN lakemon_step_0"), "plan rows stay after the DuckLake steps");
+}
+
 static void TestRewriteCallNeverUsesZeroThreshold() {
 	lakemon::TableRef ref;
 	ref.schema = "main";
@@ -111,6 +130,7 @@ int main() {
 	TestRewriteMergeKeepPositionalTableAndSchema();
 	TestGlobalRetentionCallsAreCatalogOnly();
 	TestExpireIntervalBindsWithoutIcu();
+	TestSamePlanExecuteInlinesDuckLakeTableFunctions();
 	TestRewriteCallNeverUsesZeroThreshold();
 	if (TestFailures()) {
 		std::cerr << TestFailures() << " failure(s)" << std::endl;

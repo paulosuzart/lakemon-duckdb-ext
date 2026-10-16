@@ -33,8 +33,7 @@ docs:
 
     CALL lakemon_table_stats('lake');
     CALL lakemon_maintain('lake');
-    PRAGMA lakemon_maintain('lake');
-    PRAGMA lakemon_maintain_global('lake');
+    CALL lakemon_maintain_global('lake');
     CALL lakemon_policy();
 
   extended_description: |
@@ -44,7 +43,7 @@ docs:
     * Byte-weighted adaptive rewrite ladder (delete fraction DESC; one ducklake_rewrite_data_files CALL per byte-cut rung)
     * Merge size bands (micro / small / medium) with per-tier target_file_size
     * Table maintain (lakemon_maintain) vs catalog-global expire/cleanup (lakemon_maintain_global)
-    * CALL plans; PRAGMA executes the planned DuckLake statements
+    * CALL / SELECT plan and execute by default (dry_run for plan only)
     * One result row per step (ok / skip / error / planned)
 
     Requires the core ducklake extension in the same session and an attached DuckLake catalog.

@@ -2,6 +2,7 @@
 
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace lakemon {
 
@@ -114,6 +115,43 @@ inline std::string CleanupOldFilesCall(const std::string &catalog, const std::st
 
 inline std::string DeleteOrphanedFilesCall(const std::string &catalog) {
 	return "CALL ducklake_delete_orphaned_files(" + QuoteString(catalog) + ")";
+}
+
+// bind_replace inlines DuckLake table functions into the same SELECT. Strip the
+// CALL keyword so the fragment is a table-function FROM item.
+inline std::string CallStatementToTableFunction(const std::string &sql) {
+	if (sql.size() >= 5 && (sql.compare(0, 5, "CALL ") == 0 || sql.compare(0, 5, "call ") == 0)) {
+		return sql.substr(5);
+	}
+	return sql;
+}
+
+// Sequential same-plan execute: MATERIALIZED CTEs plus a predicate on the
+// previous count so flush / rewrite / merge cannot run in parallel. Each CTE is
+// COUNT(*) FROM <ducklake table function>, which binds through ducklake's
+// bind_operator on the outer ClientContext (no nested Connection).
+inline std::string SamePlanExecuteSelect(const std::string &plan_select, const std::vector<std::string> &call_sqls) {
+	if (call_sqls.empty()) {
+		return plan_select;
+	}
+	std::ostringstream sql;
+	sql << "WITH ";
+	for (size_t i = 0; i < call_sqls.size(); i++) {
+		if (i > 0) {
+			sql << ", ";
+		}
+		sql << "lakemon_step_" << i << " AS MATERIALIZED (SELECT COUNT(*)::BIGINT AS c FROM "
+		    << CallStatementToTableFunction(call_sqls[i]);
+		if (i > 0) {
+			sql << " WHERE (SELECT c FROM lakemon_step_" << (i - 1) << ") IS NOT NULL";
+		}
+		sql << ")";
+	}
+	sql << " SELECT lakemon_plan.* FROM (" << plan_select << ") AS lakemon_plan";
+	for (size_t i = 0; i < call_sqls.size(); i++) {
+		sql << " CROSS JOIN lakemon_step_" << i;
+	}
+	return sql.str();
 }
 
 } // namespace lakemon

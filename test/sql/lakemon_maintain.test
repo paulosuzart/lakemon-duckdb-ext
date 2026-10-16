@@ -89,18 +89,22 @@ WHERE step = 'delete_orphaned_files' AND details LIKE '%ducklake_delete_orphaned
 ----
 1
 
-# Table function always plans (never executes nested DuckLake CALLs).
+# dry_run still plans expire SQL (no attached catalog, no DuckLake execute).
 query II
-SELECT step, status FROM lakemon_maintain_global('no_such_lake', expire_older_than => '7 days', skip_cleanup => true)
+SELECT step, status FROM lakemon_maintain_global('no_such_lake', dry_run => true, expire_older_than => '7 days', skip_cleanup => true)
 WHERE step = 'expire_snapshots';
 ----
 expire_snapshots	planned
 
 query I
-SELECT count(*) FROM lakemon_maintain_global('no_such_lake', expire_older_than => '7 days', skip_cleanup => true)
+SELECT count(*) FROM lakemon_maintain_global('no_such_lake', dry_run => true, expire_older_than => '7 days', skip_cleanup => true)
 WHERE step = 'expire_snapshots' AND details LIKE '%now()::TIMESTAMP - INTERVAL%';
 ----
 1
+
+# Execute without an attached catalog is a statement error (same-plan DuckLake TF).
+statement error
+SELECT * FROM lakemon_maintain_global('no_such_lake', expire_older_than => '7 days', skip_cleanup => true);
 
 # PRAGMA is registered. Missing catalog / unloaded ducklake is a statement error.
 statement error

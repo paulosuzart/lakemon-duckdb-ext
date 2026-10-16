@@ -469,8 +469,8 @@ static void TestPipelineStepsAreIndependent() {
 	       "lakemon_maintain must not expire snapshots or clean old/orphan files");
 	Expect(!lakemon::GlobalMaintainIncludesTableWork(),
 	       "lakemon_maintain_global must not flush, rewrite, or merge");
-	Expect(!lakemon::TableFunctionRunsDuckLakeCalls(),
-	       "table function only plans; PRAGMA runs the DuckLake statements");
+	Expect(lakemon::TableFunctionRunsDuckLakeCalls(),
+	       "CALL / SELECT bind_replace runs DuckLake table functions in the same plan");
 	Expect(!lakemon::FlushErrorSkipsStep("expire_snapshots"), "flush error does not skip expire");
 	Expect(!lakemon::FlushErrorSkipsStep("cleanup_old_files"), "flush error does not skip cleanup");
 	Expect(!lakemon::FlushErrorSkipsStep("delete_orphaned_files"), "flush error does not skip orphan cleanup");
