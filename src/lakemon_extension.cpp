@@ -209,7 +209,10 @@ static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFun
 		rows.push_back(OrchestrateErrorRow("maintain", lakemon::SafeWhat(ex)));
 	}
 
-	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, !options.dry_run));
+	if (!options.dry_run) {
+		lakemon::ExecutePlannedRows(context, rows);
+	}
+	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
 	ref->alias = input.ref.alias;
 	ref->column_name_alias = input.ref.column_name_alias;
 	return ref;
@@ -243,7 +246,10 @@ static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, Ta
 		rows.push_back(OrchestrateErrorRow("maintain_global", lakemon::SafeWhat(ex)));
 	}
 
-	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, !options.dry_run));
+	if (!options.dry_run) {
+		lakemon::ExecutePlannedRows(context, rows);
+	}
+	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
 	ref->alias = input.ref.alias;
 	ref->column_name_alias = input.ref.column_name_alias;
 	return ref;
@@ -710,8 +716,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(set_policy);
 
 	// Optional PRAGMA form: replacement-query execute (same result as CALL).
-	// CALL / SELECT use bind_replace so DuckLake table functions run in the
-	// same query (same ClientContext / transaction), not a nested Connection.
+	// CALL / SELECT use bind_replace: plan, then ExecutePlannedRows (one
+	// committed DuckLake CALL each). Not table-function init.
 	PragmaFunctionSet maintain_pragma("lakemon_maintain");
 	auto maintain_pragma_one =
 	    PragmaFunction::PragmaCall("lakemon_maintain", MaintainPragmaQuery, {LogicalType::VARCHAR});

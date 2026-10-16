@@ -27,8 +27,10 @@ inline bool GlobalMaintainIncludesTableWork() {
 	return false;
 }
 
-// CALL / SELECT bind_replace inlines DuckLake table functions into the same
-// query plan (same ClientContext / transaction). No nested Connection.
+// CALL / SELECT bind_replace plans, then ExecutePlannedRows runs each DuckLake
+// CALL on a nested Connection (own commit). DuckLake forbids mixing data
+// changes and compaction in one transaction, so one-query CTE execute cannot
+// flush + set_option + merge together. Not table-function init (that deadlocks).
 inline bool TableFunctionRunsDuckLakeCalls() {
 	return true;
 }
