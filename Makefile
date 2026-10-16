@@ -23,6 +23,7 @@ policy-test:
 	$(PROJ_DIR)test/policy/test_sql
 
 # Execute flush+merge and expire against a real lake. A hang fails via timeout.
+# Requires a build with LAKEMON_CI_POSTGRES=1 (ducklake is not in the default binary).
 .PHONY: lake-test
 LAKE_TEST_TIMEOUT ?= 60
 lake-test:

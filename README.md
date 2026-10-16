@@ -286,7 +286,7 @@ Optional: `ccache` and `ninja` (`GEN=ninja make`) for faster rebuilds. No vcpkg 
 make                 # builds DuckDB + the extension
 make test            # SQL tests (extension smoke + lake execute when ducklake is built)
 make policy-test     # header-only policy tests (no DuckDB)
-make lake-test       # file-backed lake execute with a 60s hang timeout
+make lake-test       # file-backed lake execute (LAKEMON_CI_POSTGRES=1 build, 60s hang timeout)
 make postgres-lake-test  # Postgres catalog execute (LAKEMON_CI_POSTGRES=1 build)
 ```
 
@@ -304,7 +304,7 @@ The in-tree shell already loads `lakemon`.
 
 - `make policy-test` — rewrite-ladder / merge-tier math, DuckLake option precedence, persisted policy overlays, and generated DuckLake CALL SQL (no DuckDB, seconds). Includes expire/cleanup `now()::TIMESTAMP` (no ICU).
 - `make test` — SQL smoke: `lakemon_version`, `lakemon_policy` / `lakemon_set_policy`, bind errors / maintain plan rows when no catalog is attached, `lakemon_maintain_global` registration and retention skip/plan rows, ICU-free expire expression, and (when ducklake is built in) file-backed execute of flush+merge and expire
-- `make lake-test` — `test/sql/lakemon_execute.test` under a 60s timeout so a hang fails
+- `make lake-test` — `test/sql/lakemon_execute.test` under a 60s timeout so a hang fails (`LAKEMON_CI_POSTGRES=1` build; skipped otherwise)
 - `make postgres-lake-test` — same execute path against a Postgres DuckLake catalog (`LAKEMON_CI_POSTGRES=1` build, `LAKEMON_PG` connection string)
 - CI: `make policy-test` and **Postgres lake execute** (DuckDB **1.5.5** and **2.x**, Postgres service, hang timeout, flush/merge/expire asserts) on every push/PR. Full DuckDB **1.5.5** and **2.x** (`v2.0-cyanoptera`) distribution builds run on `main`, `v*` tags, or **Actions → Main Extension Distribution Pipeline → Run workflow** (use that before a community listing submit). DuckDB **1.5.3** and **1.5.6** binaries are built only on `v*` tags or that same **Run workflow** path (not on ordinary pushes to `main`).
 
