@@ -80,9 +80,10 @@ std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute)
 	return PlanRowsSelect(rows, execute);
 }
 
-void RequireMaintainExecute(duckdb::ClientContext &context) {
+void RequireMaintainExecute(duckdb::ClientContext &context, bool has_prepared_parameters) {
 	std::string error;
-	if (MaintainExecuteRefused(context.transaction.IsAutoCommit(), context.GetCurrentQuery(), error)) {
+	if (MaintainExecuteRefused(context.transaction.IsAutoCommit(), context.GetCurrentQuery(), error,
+	                           has_prepared_parameters)) {
 		throw duckdb::InvalidInputException("%s", error.c_str());
 	}
 }

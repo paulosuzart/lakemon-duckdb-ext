@@ -134,6 +134,12 @@ CREATE VIEW lakemon_missing_view AS SELECT * FROM lakemon_maintain('no_such_lake
 ----
 CREATE
 
+# Parameter placeholder is the same bind path as C API / driver prepare.
+statement error
+SELECT * FROM lakemon_maintain(?, dry_run => false);
+----
+prepared
+
 statement ok
 BEGIN;
 

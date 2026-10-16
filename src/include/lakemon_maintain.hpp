@@ -50,8 +50,9 @@ std::vector<MaintainRow> RunGlobalMaintain(duckdb::ClientContext &context, const
 std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute);
 
 // Refuse dry_run => false unless the statement is a plain CALL / SELECT /
-// FROM / WITH / PRAGMA in autocommit. Also refuses an explicit BEGIN.
-void RequireMaintainExecute(duckdb::ClientContext &context);
+// FROM / WITH / PRAGMA in autocommit. Also refuses an explicit BEGIN and a
+// bind that has prepared-statement parameters (C API / driver prepare).
+void RequireMaintainExecute(duckdb::ClientContext &context, bool has_prepared_parameters = false);
 
 // Run each non-empty row.sql on a nested Connection (own commit). Fail-fast:
 // first error appends to details, marks later SQL rows skip / not-run, and

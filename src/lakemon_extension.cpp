@@ -20,6 +20,7 @@
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/planner/binder.hpp"
 
 #include <exception>
 #include <new>
@@ -139,6 +140,17 @@ static void ParseNamedGlobalMaintain(TableFunctionBindInput &input, lakemon::Glo
 	ParseNamedGlobalMaintainMap(input.named_parameters, options);
 }
 
+static bool HasPreparedParameters(TableFunctionBindInput &input) {
+	if (!input.binder) {
+		return false;
+	}
+	auto param_map = input.binder->GetParameters();
+	if (!param_map) {
+		return false;
+	}
+	return !param_map->GetParameters().empty();
+}
+
 static void MaintainReturnTypes(vector<LogicalType> &return_types, lakemon::ColumnNameList &names) {
 	names = {"step", "schema_name", "table_name", "action", "status", "files_processed", "files_created", "details"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
@@ -180,10 +192,6 @@ static unique_ptr<TableRef> ParseSelectAsSubquery(ClientContext &context, const 
 
 static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	lakemon::MaintainOptions options;
-	options.catalog = RequireCatalog(input.inputs[0]);
-	if (input.inputs.size() >= 2 && !input.inputs[1].IsNull()) {
-		options.table = lakemon::ParseTableRef(StringValue::Get(input.inputs[1]));
-	}
 	try {
 		ParseNamedMaintain(input, options);
 	} catch (const InterruptException &) {
@@ -197,7 +205,12 @@ static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFun
 	}
 
 	if (!options.dry_run) {
-		lakemon::RequireMaintainExecute(context);
+		lakemon::RequireMaintainExecute(context, HasPreparedParameters(input));
+	}
+
+	options.catalog = RequireCatalog(input.inputs[0]);
+	if (input.inputs.size() >= 2 && !input.inputs[1].IsNull()) {
+		options.table = lakemon::ParseTableRef(StringValue::Get(input.inputs[1]));
 	}
 
 	std::vector<lakemon::MaintainRow> rows;
@@ -224,7 +237,6 @@ static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFun
 
 static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	lakemon::GlobalMaintainOptions options;
-	options.catalog = RequireCatalog(input.inputs[0]);
 	try {
 		ParseNamedGlobalMaintain(input, options);
 	} catch (const InterruptException &) {
@@ -238,8 +250,10 @@ static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, Ta
 	}
 
 	if (!options.dry_run) {
-		lakemon::RequireMaintainExecute(context);
+		lakemon::RequireMaintainExecute(context, HasPreparedParameters(input));
 	}
+
+	options.catalog = RequireCatalog(input.inputs[0]);
 
 	std::vector<lakemon::MaintainRow> rows;
 	try {
@@ -736,7 +750,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	// Optional PRAGMA form: same plan + ExecutePlannedRows path as CALL.
 	// CALL / SELECT use bind_replace: plan, then ExecutePlannedRows (one
 	// committed DuckLake CALL each). Not table-function init. dry_run => false
-	// is allowed only for CALL / SELECT / FROM / WITH / PRAGMA in autocommit.
+	// is allowed only for CALL / SELECT / FROM / WITH / PRAGMA in autocommit,
+	// and is refused when the binder has prepared-statement parameters.
 	PragmaFunctionSet maintain_pragma("lakemon_maintain");
 	auto maintain_pragma_one =
 	    PragmaFunction::PragmaCall("lakemon_maintain", MaintainPragmaQuery, {LogicalType::VARCHAR});

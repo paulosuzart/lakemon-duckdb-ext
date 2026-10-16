@@ -325,6 +325,14 @@ def assert_execute_guards(session: LakeSession, timeout: int) -> None:
 		"CREATE VIEW dry_run => false",
 		timeout,
 	)
+	# Same bind path as C API / Python / JDBC prepare with a parameter.
+	expect_refused(
+		session,
+		f"SELECT * FROM lakemon_maintain(?, dry_run => false);",
+		"prepared",
+		"parameterized SELECT dry_run => false",
+		timeout,
+	)
 	if count_snapshots(session) != snaps:
 		raise Failed(f"guards changed snapshots: {snaps} -> {count_snapshots(session)}")
 	if count_files(session) != files:

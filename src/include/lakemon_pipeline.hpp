@@ -92,7 +92,15 @@ inline bool IsMaintainExecuteKeyword(const std::string &keyword) {
 }
 
 // True when dry_run => false must be refused. error is a complete lakemon: message.
-inline bool MaintainExecuteRefused(bool auto_commit, const std::string &query, std::string &error) {
+// has_prepared_parameters is structural (Binder parameter map), not query text.
+inline bool MaintainExecuteRefused(bool auto_commit, const std::string &query, std::string &error,
+                                   bool has_prepared_parameters = false) {
+	if (has_prepared_parameters) {
+		error = "lakemon: dry_run => false cannot be prepared with parameters "
+		        "(C API / driver prepare). Use a plain CALL or SELECT with literals, "
+		        "or dry_run => true.";
+		return true;
+	}
 	if (!auto_commit) {
 		error = "lakemon: dry_run => false is not allowed inside an explicit transaction "
 		        "(BEGIN). Commit first, or use dry_run => true. Nested execute would wait "

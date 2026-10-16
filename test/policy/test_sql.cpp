@@ -129,6 +129,9 @@ static void TestExecuteGuardsRefuseBindOnlyAndBegin() {
 	Expect(Contains(error, "CREATE"), "CREATE VIEW error names the keyword");
 	Expect(!lakemon::MaintainExecuteRefused(true, "SELECT * FROM lakemon_maintain('lake', dry_run => false)", error),
 	       "plain SELECT is allowed");
+	Expect(lakemon::MaintainExecuteRefused(true, "SELECT * FROM lakemon_maintain(?, dry_run => false)", error, true),
+	       "prepared parameters are refused");
+	Expect(Contains(error, "prepared"), "parameter error names prepared statements");
 }
 
 static void TestRewriteCallNeverUsesZeroThreshold() {

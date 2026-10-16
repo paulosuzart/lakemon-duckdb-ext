@@ -114,6 +114,12 @@ SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run 
 ----
 CREATE
 
+# Same bind path as C API / Python / JDBC prepare with a parameter.
+statement error
+SELECT * FROM lakemon_maintain(?, dry_run => false);
+----
+prepared
+
 statement ok
 BEGIN;
 
