@@ -19,6 +19,7 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 
 #include <exception>
 #include <new>
@@ -102,7 +103,8 @@ static void ParseNamedMaintainMap(const NamedMap &named, lakemon::MaintainOption
 		if (entry.first == "dry_run") {
 			options.dry_run = BooleanValue::Get(entry.second);
 		} else if (entry.first == "max_compacted_files") {
-			options.max_compacted_files = entry.second.GetValue<int64_t>();
+			// BigintValue::Get avoids Value::GetValue<T> in a dependent context (C++11).
+			options.max_compacted_files = BigintValue::Get(entry.second);
 		}
 	}
 }

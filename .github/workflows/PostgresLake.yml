@@ -25,10 +25,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # vcpkg pins match extension-ci-tools for that DuckDB line.
+          # 1.5.5: 2025.12.12. 2.x: 2026.06.24 (has roaring 4.7.1 / zlib 1.3.2).
           - duckdb_version: v1.5.5
             ci_tools_version: v1.5.5
+            vcpkg_commit: 84bab45d415d22042bd0b9081aea57f362da3f35
           - duckdb_version: v2.0-cyanoptera
             ci_tools_version: main
+            vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
     services:
       postgres:
         image: postgres:16
@@ -53,6 +57,8 @@ jobs:
       VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       VCPKG_TARGET_TRIPLET: x64-linux
       USE_MERGED_VCPKG_MANIFEST: "1"
+      VCPKG_OVERLAY_PORTS: ${{ github.workspace }}/extension-ci-tools/vcpkg_ports
+      VCPKG_BINARY_SOURCES: clear;http,https://vcpkg-cache.duckdb.org,read
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +81,7 @@ jobs:
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
+          vcpkgGitCommitId: ${{ matrix.vcpkg_commit }}
 
       - name: Build lakemon + ducklake + postgres_scanner
         run: make -j"$(nproc)"
