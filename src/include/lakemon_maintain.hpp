@@ -49,14 +49,14 @@ std::vector<MaintainRow> RunGlobalMaintain(duckdb::ClientContext &context, const
 // DuckLake transaction cannot mix data changes and compaction.
 std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute);
 
-// Refuse dry_run => false under EXPLAIN / PREPARE / EXECUTE / DESCRIBE /
-// SUMMARIZE, or inside an explicit (non-autocommit) transaction.
+// Refuse dry_run => false unless the statement is a plain CALL / SELECT /
+// FROM / WITH / PRAGMA in autocommit. Also refuses an explicit BEGIN.
 void RequireMaintainExecute(duckdb::ClientContext &context);
 
 // Run each non-empty row.sql on a nested Connection (own commit). Fail-fast:
 // first error appends to details, marks later SQL rows skip / not-run, and
-// sets files_created from the CALL result row count. Interrupt marks the
-// remaining SQL rows then rethrows (already-committed steps stay committed).
+// sets files_created from the CALL result row count. Interrupt rethrows so
+// the result rows are not returned; already-committed steps stay committed.
 void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows);
 
 } // namespace lakemon

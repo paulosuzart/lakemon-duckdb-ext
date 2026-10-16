@@ -129,6 +129,11 @@ PREPARE lakemon_missing AS SELECT * FROM lakemon_maintain_global('no_such_lake',
 ----
 PREPARE
 
+statement error
+CREATE VIEW lakemon_missing_view AS SELECT * FROM lakemon_maintain('no_such_lake', dry_run => false);
+----
+CREATE
+
 statement ok
 BEGIN;
 

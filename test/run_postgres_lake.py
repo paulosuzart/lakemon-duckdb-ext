@@ -317,6 +317,14 @@ def assert_execute_guards(session: LakeSession, timeout: int) -> None:
 		"BEGIN dry_run => false",
 		timeout,
 	)
+	expect_refused(
+		session,
+		f"CREATE VIEW lakemon_view AS SELECT * FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', "
+		f"dry_run => false);",
+		"CREATE",
+		"CREATE VIEW dry_run => false",
+		timeout,
+	)
 	if count_snapshots(session) != snaps:
 		raise Failed(f"guards changed snapshots: {snaps} -> {count_snapshots(session)}")
 	if count_files(session) != files:
@@ -330,8 +338,10 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 	rows_before = count_rows(session)
 	files_before = count_files(session)
 	inlined_before = count_inlined_rows(session)
+	snaps_before = count_snapshots(session)
 	print(
-		f"before maintain: files={files_before} inlined_rows={inlined_before} table_rows={rows_before}"
+		f"before maintain: files={files_before} inlined_rows={inlined_before} "
+		f"table_rows={rows_before} snapshots={snaps_before}"
 	)
 	if inlined_before <= 0:
 		raise Failed(f"setup lost inlined data before maintain (inlined_rows={inlined_before})")
@@ -339,8 +349,7 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 		raise Failed(f"setup did not keep many small files before maintain (files={files_before})")
 
 	rows = session.query_rows(
-		f"SELECT step, action, status, files_created FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false) "
-		f"WHERE step IN ('flush_inlined', 'merge') ORDER BY step, action;",
+		f"SELECT step, action, status, files_created FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false);",
 		timeout=timeout,
 	)
 	print("maintain result:")
@@ -350,6 +359,19 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 		raise Failed(f"flush_inlined did not run to ok: {flush}")
 	if not any(row.get("step") == "merge" and row.get("status") == "ok" for row in rows):
 		raise Failed(f"no merge step ran to ok: {rows}")
+	ok_mutating = [
+		row
+		for row in rows
+		if row.get("status") == "ok"
+		and row.get("step") in ("flush_inlined", "rewrite", "merge")
+	]
+	snaps_after = count_snapshots(session)
+	snap_delta = snaps_after - snaps_before
+	if snap_delta != len(ok_mutating):
+		raise Failed(
+			f"one CALL should add one snapshot per ok mutating step: "
+			f"delta={snap_delta} ok_steps={len(ok_mutating)} rows={rows}"
+		)
 	if rows_before != count_rows(session):
 		raise Failed(f"row count changed during maintain: {rows_before} -> {count_rows(session)}")
 

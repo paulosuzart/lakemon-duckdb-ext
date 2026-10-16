@@ -34,12 +34,22 @@ WHERE step = 'flush_inlined';
 planned
 
 # Deadlock regression: CALL / SELECT with dry_run => false must execute from
-# bind_replace (not table-function init). One CALL runs the planned steps once.
+# bind_replace (not table-function init). One SELECT adds snapshots; a double
+# bind would add them twice. Exact 1:1 snapshot delta is asserted in the
+# Postgres script (it can count ok steps in the same process).
+statement ok
+CREATE TEMP TABLE lakemon_once_before AS SELECT count(*) AS snaps FROM ducklake_snapshots('lake');
+
 query I
 SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false)
 WHERE step = 'flush_inlined';
 ----
 ok
+
+query I
+SELECT (SELECT count(*) FROM ducklake_snapshots('lake')) > (SELECT snaps FROM lakemon_once_before);
+----
+true
 
 query I
 SELECT count(*) FROM lake.bronze_financial.subscription;
@@ -97,6 +107,12 @@ statement error
 EXECUTE lakemon_exec;
 ----
 lakemon_exec
+
+statement error
+CREATE VIEW lakemon_view AS
+SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false);
+----
+CREATE
 
 statement ok
 BEGIN;

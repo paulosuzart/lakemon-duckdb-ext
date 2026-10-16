@@ -196,6 +196,10 @@ static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFun
 		throw InvalidInputException("lakemon: %s", lakemon::SafeWhat(ex));
 	}
 
+	if (!options.dry_run) {
+		lakemon::RequireMaintainExecute(context);
+	}
+
 	std::vector<lakemon::MaintainRow> rows;
 	try {
 		rows = lakemon::RunMaintain(context, options);
@@ -210,7 +214,6 @@ static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFun
 	}
 
 	if (!options.dry_run) {
-		lakemon::RequireMaintainExecute(context);
 		lakemon::ExecutePlannedRows(context, rows);
 	}
 	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
@@ -234,6 +237,10 @@ static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, Ta
 		throw InvalidInputException("lakemon: %s", lakemon::SafeWhat(ex));
 	}
 
+	if (!options.dry_run) {
+		lakemon::RequireMaintainExecute(context);
+	}
+
 	std::vector<lakemon::MaintainRow> rows;
 	try {
 		rows = lakemon::RunGlobalMaintain(context, options);
@@ -248,7 +255,6 @@ static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, Ta
 	}
 
 	if (!options.dry_run) {
-		lakemon::RequireMaintainExecute(context);
 		lakemon::ExecutePlannedRows(context, rows);
 	}
 	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
@@ -730,8 +736,7 @@ void LoadInternal(ExtensionLoader &loader) {
 	// Optional PRAGMA form: same plan + ExecutePlannedRows path as CALL.
 	// CALL / SELECT use bind_replace: plan, then ExecutePlannedRows (one
 	// committed DuckLake CALL each). Not table-function init. dry_run => false
-	// is refused under EXPLAIN / PREPARE / EXECUTE / DESCRIBE / SUMMARIZE and
-	// inside an explicit BEGIN.
+	// is allowed only for CALL / SELECT / FROM / WITH / PRAGMA in autocommit.
 	PragmaFunctionSet maintain_pragma("lakemon_maintain");
 	auto maintain_pragma_one =
 	    PragmaFunction::PragmaCall("lakemon_maintain", MaintainPragmaQuery, {LogicalType::VARCHAR});

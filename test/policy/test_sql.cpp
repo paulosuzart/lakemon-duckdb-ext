@@ -98,15 +98,17 @@ static void TestExecuteGuardsRefuseBindOnlyAndBegin() {
 	Expect(lakemon::LeadingSQLKeyword("-- comment\nEXPLAIN CALL lakemon_maintain('lake')") == "EXPLAIN",
 	       "skips line comments");
 	Expect(lakemon::LeadingSQLKeyword("/* x */ (PREPARE p AS SELECT 1)") == "PREPARE", "skips block comments and parens");
-	Expect(lakemon::IsBindOnlySQLKeyword("EXPLAIN"), "EXPLAIN is bind-only");
-	Expect(lakemon::IsBindOnlySQLKeyword("PREPARE"), "PREPARE is bind-only");
-	Expect(lakemon::IsBindOnlySQLKeyword("EXECUTE"), "EXECUTE is bind-only");
-	Expect(lakemon::IsBindOnlySQLKeyword("DESCRIBE"), "DESCRIBE is bind-only");
-	Expect(lakemon::IsBindOnlySQLKeyword("SUMMARIZE"), "SUMMARIZE is bind-only");
-	Expect(!lakemon::IsBindOnlySQLKeyword("CALL"), "CALL may execute");
-	Expect(!lakemon::IsBindOnlySQLKeyword("SELECT"), "SELECT may execute");
-	Expect(!lakemon::IsBindOnlySQLKeyword("WITH"), "WITH may execute");
-	Expect(!lakemon::IsBindOnlySQLKeyword("PRAGMA"), "PRAGMA may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("CALL"), "CALL may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("SELECT"), "SELECT may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("FROM"), "FROM may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("WITH"), "WITH may execute");
+	Expect(lakemon::IsMaintainExecuteKeyword("PRAGMA"), "PRAGMA may execute");
+	Expect(!lakemon::IsMaintainExecuteKeyword("EXPLAIN"), "EXPLAIN is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("PREPARE"), "PREPARE is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("EXECUTE"), "EXECUTE is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("DESCRIBE"), "DESCRIBE is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("SUMMARIZE"), "SUMMARIZE is not an execute form");
+	Expect(!lakemon::IsMaintainExecuteKeyword("CREATE"), "CREATE VIEW is not an execute form");
 
 	std::string error;
 	Expect(!lakemon::MaintainExecuteRefused(true, "CALL lakemon_maintain('lake')", error),
@@ -122,6 +124,9 @@ static void TestExecuteGuardsRefuseBindOnlyAndBegin() {
 	       "PREPARE is refused");
 	Expect(Contains(error, "PREPARE"), "PREPARE error names the keyword");
 	Expect(lakemon::MaintainExecuteRefused(true, "EXECUTE p", error), "EXECUTE is refused");
+	Expect(lakemon::MaintainExecuteRefused(true, "CREATE VIEW v AS SELECT * FROM lakemon_maintain('lake')", error),
+	       "CREATE VIEW is refused");
+	Expect(Contains(error, "CREATE"), "CREATE VIEW error names the keyword");
 	Expect(!lakemon::MaintainExecuteRefused(true, "SELECT * FROM lakemon_maintain('lake', dry_run => false)", error),
 	       "plain SELECT is allowed");
 }

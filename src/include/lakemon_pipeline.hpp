@@ -32,8 +32,8 @@ inline bool GlobalMaintainIncludesTableWork() {
 // CALL on a nested Connection (own commit). DuckLake forbids mixing data
 // changes and compaction in one transaction, so one-query CTE execute cannot
 // flush + set_option + merge together. Not table-function init (that deadlocks).
-// dry_run => false is refused under EXPLAIN / PREPARE / EXECUTE / DESCRIBE /
-// SUMMARIZE (bind without a single execution, or rebind) and inside BEGIN.
+// dry_run => false is allowed only for CALL / SELECT / FROM / WITH / PRAGMA in
+// autocommit. EXPLAIN, PREPARE, CREATE VIEW, and other wrappers are refused.
 inline bool TableFunctionRunsDuckLakeCalls() {
 	return true;
 }
@@ -85,9 +85,10 @@ inline std::string LeadingSQLKeyword(const std::string &query) {
 	return keyword;
 }
 
-inline bool IsBindOnlySQLKeyword(const std::string &keyword) {
-	return keyword == "EXPLAIN" || keyword == "PREPARE" || keyword == "EXECUTE" || keyword == "DESCRIBE" ||
-	       keyword == "SUMMARIZE";
+// Statements that bind and execute as one autocommit query. Deny everything else
+// (EXPLAIN, PREPARE, EXECUTE, DESCRIBE, SUMMARIZE, CREATE VIEW, INSERT, COPY).
+inline bool IsMaintainExecuteKeyword(const std::string &keyword) {
+	return keyword == "CALL" || keyword == "SELECT" || keyword == "FROM" || keyword == "WITH" || keyword == "PRAGMA";
 }
 
 // True when dry_run => false must be refused. error is a complete lakemon: message.
@@ -99,10 +100,12 @@ inline bool MaintainExecuteRefused(bool auto_commit, const std::string &query, s
 		return true;
 	}
 	const std::string keyword = LeadingSQLKeyword(query);
-	if (IsBindOnlySQLKeyword(keyword)) {
-		error = "lakemon: dry_run => false cannot run under " + keyword +
-		        " (that binds without a single execution, or rebinds). "
-		        "Use a plain CALL or SELECT in autocommit, or dry_run => true.";
+	if (!IsMaintainExecuteKeyword(keyword)) {
+		error = "lakemon: dry_run => false requires a plain CALL, SELECT, FROM, WITH, or "
+		        "PRAGMA in autocommit (got " +
+		        (keyword.empty() ? "empty" : keyword) +
+		        "). EXPLAIN, PREPARE, CREATE VIEW, and other wrappers bind without a "
+		        "single execution, or rebind.";
 		return true;
 	}
 	return false;
