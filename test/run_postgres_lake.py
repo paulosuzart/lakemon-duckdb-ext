@@ -278,14 +278,15 @@ def seed(session: LakeSession) -> None:
 
 
 def expect_refused(session: LakeSession, sql: str, needle: str, label: str, timeout: int) -> None:
+	needles = (needle,) if isinstance(needle, str) else tuple(needle)
 	try:
 		session.run(sql, timeout=timeout)
 	except Failed as exc:
 		text = str(exc)
 		if "TIMEOUT" in text:
 			raise
-		if needle not in text:
-			raise Failed(f"{label} error should mention {needle!r}:\n{text}")
+		if not any(item in text for item in needles):
+			raise Failed(f"{label} error should mention one of {needles!r}:\n{text}")
 		return
 	raise Failed(f"{label} should have been refused")
 
@@ -329,7 +330,7 @@ def assert_execute_guards(session: LakeSession, timeout: int) -> None:
 	expect_refused(
 		session,
 		f"SELECT * FROM lakemon_maintain(?, dry_run => false);",
-		"prepared",
+		("prepared", "Parameter", "parameter"),
 		"parameterized SELECT dry_run => false",
 		timeout,
 	)
@@ -367,11 +368,14 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 		raise Failed(f"flush_inlined did not run to ok: {flush}")
 	if not any(row.get("step") == "merge" and row.get("status") == "ok" for row in rows):
 		raise Failed(f"no merge step ran to ok: {rows}")
+	# set_option (set_target_*) does not add a DuckLake snapshot; count only
+	# flush / rewrite / merge CALLs so a double bind would be 2x this delta.
 	ok_mutating = [
 		row
 		for row in rows
 		if row.get("status") == "ok"
 		and row.get("step") in ("flush_inlined", "rewrite", "merge")
+		and not str(row.get("action", "")).startswith("set_target_")
 	]
 	snaps_after = count_snapshots(session)
 	snap_delta = snaps_after - snaps_before
