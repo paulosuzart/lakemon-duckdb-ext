@@ -52,7 +52,11 @@ std::string BindReplaceQuery(const std::vector<MaintainRow> &rows, bool execute)
 // Refuse dry_run => false unless the statement is a plain CALL / SELECT /
 // FROM / WITH / PRAGMA in autocommit. Also refuses an explicit BEGIN and a
 // bind that has prepared-statement parameters (C API / driver prepare).
-void RequireMaintainExecute(duckdb::ClientContext &context, bool has_prepared_parameters = false);
+// statement_override is the SQL used for the keyword check. Pass "PRAGMA"
+// from the PRAGMA query function: GetCurrentQuery() needs active_query, which
+// is not set while DuckDB is still rewriting the PRAGMA.
+void RequireMaintainExecute(duckdb::ClientContext &context, bool has_prepared_parameters = false,
+                            const char *statement_override = nullptr);
 
 // Run each non-empty row.sql on a nested Connection (own commit). Fail-fast:
 // first error appends to details, marks later SQL rows skip / not-run, and
