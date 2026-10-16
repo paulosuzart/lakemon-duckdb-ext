@@ -103,8 +103,8 @@ static void ParseNamedMaintainMap(const NamedMap &named, lakemon::MaintainOption
 		if (entry.first == "dry_run") {
 			options.dry_run = BooleanValue::Get(entry.second);
 		} else if (entry.first == "max_compacted_files") {
-			// BigintValue::Get avoids Value::GetValue<T> in a dependent context (C++11).
-			options.max_compacted_files = BigintValue::Get(entry.second);
+			// BigIntValue::Get avoids Value::GetValue<T> in a dependent context (C++11).
+			options.max_compacted_files = BigIntValue::Get(entry.second);
 		}
 	}
 }
@@ -162,8 +162,13 @@ static lakemon::MaintainRow OrchestrateErrorRow(const char *step, const char *de
 	return row;
 }
 
-static unique_ptr<TableRef> ParseSelectAsSubquery(const string &sql) {
+static unique_ptr<TableRef> ParseSelectAsSubquery(ClientContext &context, const string &sql) {
+#if LAKEMON_DUCKDB_2
+	Parser parser(context);
+#else
+	(void)context;
 	Parser parser;
+#endif
 	parser.ParseQuery(sql);
 	if (parser.statements.size() != 1 || !parser.statements[0] ||
 	    parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
@@ -204,7 +209,7 @@ static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFun
 		rows.push_back(OrchestrateErrorRow("maintain", lakemon::SafeWhat(ex)));
 	}
 
-	auto ref = ParseSelectAsSubquery(lakemon::BindReplaceQuery(rows, !options.dry_run));
+	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, !options.dry_run));
 	ref->alias = input.ref.alias;
 	ref->column_name_alias = input.ref.column_name_alias;
 	return ref;
@@ -238,7 +243,7 @@ static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, Ta
 		rows.push_back(OrchestrateErrorRow("maintain_global", lakemon::SafeWhat(ex)));
 	}
 
-	auto ref = ParseSelectAsSubquery(lakemon::BindReplaceQuery(rows, !options.dry_run));
+	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, !options.dry_run));
 	ref->alias = input.ref.alias;
 	ref->column_name_alias = input.ref.column_name_alias;
 	return ref;
