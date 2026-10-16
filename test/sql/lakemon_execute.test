@@ -1,0 +1,77 @@
+# name: test/sql/lakemon_execute.test
+# description: execute flush+merge and expire against a file-backed DuckLake catalog
+# group: [sql]
+
+require lakemon
+
+require ducklake
+
+require parquet
+
+# File-backed catalog (no external database). A hang here is the nested-connection
+# deadlock regression; run via `make lake-test` (60s timeout) or `make test`.
+
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/lakemon_exec.ducklake' AS lake (DATA_PATH '__TEST_DIR__/lakemon_exec_data');
+
+statement ok
+CREATE SCHEMA lake.bronze_financial;
+
+statement ok
+CREATE TABLE lake.bronze_financial.subscription(id INTEGER, payload VARCHAR);
+
+statement ok
+INSERT INTO lake.bronze_financial.subscription VALUES (1, 'a'), (2, 'b');
+
+statement ok
+INSERT INTO lake.bronze_financial.subscription VALUES (3, 'c'), (4, 'd');
+
+# Deadlock regression: CALL / SELECT with dry_run => false must return a plan,
+# not open a nested Connection to CALL ducklake_flush_inlined_data.
+query I
+SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => false)
+WHERE step = 'flush_inlined';
+----
+planned
+
+query I
+SELECT count(*) FROM lakemon_maintain('lake', 'bronze_financial.subscription')
+WHERE step = 'flush_inlined' AND details LIKE '%ducklake_flush_inlined_data%';
+----
+1
+
+# Execute: PRAGMA expands to the planned statements and DuckDB runs them as the
+# query (no nested connection inside the table function).
+statement ok
+PRAGMA lakemon_maintain('lake', 'bronze_financial.subscription');
+
+query I
+SELECT count(*) FROM lake.bronze_financial.subscription;
+----
+4
+
+# Second pass after another small insert: flush again and merge if two files exist.
+statement ok
+INSERT INTO lake.bronze_financial.subscription VALUES (5, 'e'), (6, 'f');
+
+statement ok
+PRAGMA lakemon_maintain('lake', 'bronze_financial.subscription');
+
+query I
+SELECT count(*) FROM lake.bronze_financial.subscription;
+----
+6
+
+# Expire snapshots older than now. skip_cleanup keeps data files.
+statement ok
+PRAGMA lakemon_maintain_global('lake', expire_older_than='0 days', skip_cleanup=true);
+
+query I
+SELECT count(*) FROM lake.bronze_financial.subscription;
+----
+6
+
+query I
+SELECT lakemon_version();
+----
+0.1.0

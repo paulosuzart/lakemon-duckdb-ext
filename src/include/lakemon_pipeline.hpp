@@ -5,9 +5,9 @@
 
 namespace lakemon {
 
-// After inventory succeeds, flush / rewrite / merge are best-effort and independent.
-// A flush_inlined error is recorded as status=error; rewrite and merge still run.
+// After inventory succeeds, flush / rewrite / merge are planned independently.
 // Only a hard inventory failure stops the table pipeline before rewrite/merge.
+// PRAGMA execute is fail-fast (a failed statement stops the rest of the batch).
 // Expire, old-file cleanup, and orphan delete are catalog-global and live in
 // lakemon_maintain_global, not lakemon_maintain.
 inline bool InventoryFailureStopsPipeline() {
@@ -24,6 +24,12 @@ inline bool TableMaintainIncludesRetention() {
 }
 
 inline bool GlobalMaintainIncludesTableWork() {
+	return false;
+}
+
+// Table-function CALL / SELECT only plans. Mutations run as PRAGMA replacement
+// SQL (the official way to execute statements outside the outer TF transaction).
+inline bool TableFunctionRunsDuckLakeCalls() {
 	return false;
 }
 

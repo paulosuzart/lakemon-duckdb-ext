@@ -89,12 +89,28 @@ WHERE step = 'delete_orphaned_files' AND details LIKE '%ducklake_delete_orphaned
 ----
 1
 
-# Execute path: missing catalog becomes status=error rows, session stays usable.
+# Table function always plans (never executes nested DuckLake CALLs).
 query II
 SELECT step, status FROM lakemon_maintain_global('no_such_lake', expire_older_than => '7 days', skip_cleanup => true)
 WHERE step = 'expire_snapshots';
 ----
-expire_snapshots	error
+expire_snapshots	planned
+
+query I
+SELECT count(*) FROM lakemon_maintain_global('no_such_lake', expire_older_than => '7 days', skip_cleanup => true)
+WHERE step = 'expire_snapshots' AND details LIKE '%now()::TIMESTAMP - INTERVAL%';
+----
+1
+
+# PRAGMA is registered. Missing catalog / unloaded ducklake is a statement error.
+statement error
+PRAGMA lakemon_maintain('no_such_lake');
+----
+lakemon:
+
+statement error
+PRAGMA lakemon_maintain_global('no_such_lake', expire_older_than='7 days', skip_cleanup=true);
+
 
 # Table-only knobs do not bind on the global CALL.
 statement error

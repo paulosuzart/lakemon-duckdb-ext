@@ -31,35 +31,64 @@ static MaintainRow MakeRow(const std::string &step, const std::string &schema, c
 	return row;
 }
 
-static int64_t CountResultRows(duckdb::ClientContext &context, const std::string &sql) {
-	auto result = RunSQL(context, sql);
-	if (!result) {
-		return 0;
-	}
-	return static_cast<int64_t>(result->RowCount());
+static void AppendPlanned(std::vector<MaintainRow> &rows, const std::string &step, const std::string &action,
+                          const std::string &sql, const std::string &schema, const std::string &table,
+                          const std::string &details, int64_t processed = 0) {
+	MaintainRow row = MakeRow(step, schema, table, action, "planned", processed, 0, details + " | " + sql);
+	row.sql = sql;
+	rows.push_back(std::move(row));
 }
 
-static void AppendCall(std::vector<MaintainRow> &rows, duckdb::ClientContext &context, bool dry_run,
-                       const std::string &step, const std::string &action, const std::string &sql,
-                       const std::string &schema, const std::string &table, const std::string &details,
-                       int64_t processed = 0) {
-	if (dry_run) {
-		rows.push_back(MakeRow(step, schema, table, action, "planned", processed, 0, details + " | " + sql));
-		return;
+static std::string PlanRowsSelect(const std::vector<MaintainRow> &rows, bool executed) {
+	if (rows.empty()) {
+		return "SELECT 'inventory' AS step, '' AS schema_name, '' AS table_name, 'catalog_select' AS action, "
+		       "'skip' AS status, 0::BIGINT AS files_processed, 0::BIGINT AS files_created, "
+		       "'no steps' AS details WHERE false";
 	}
-	try {
-		const int64_t created = CountResultRows(context, sql);
-		rows.push_back(MakeRow(step, schema, table, action, "ok", processed, created,
-		                       details + " | created=" + std::to_string(created)));
-	} catch (const duckdb::InterruptException &) {
-		throw;
-	} catch (const std::bad_alloc &) {
-		throw;
-	} catch (const Exception &ex) {
-		rows.push_back(MakeRow(step, schema, table, action, "error", processed, 0, details + " | " + SafeWhat(ex)));
-	} catch (const std::exception &ex) {
-		rows.push_back(MakeRow(step, schema, table, action, "error", processed, 0, details + " | " + SafeWhat(ex)));
+	std::ostringstream sql;
+	sql << "SELECT * FROM (VALUES ";
+	for (size_t i = 0; i < rows.size(); i++) {
+		const auto &row = rows[i];
+		const std::string status = (executed && !row.sql.empty()) ? "ok" : row.status;
+		if (i > 0) {
+			sql << ", ";
+		}
+		sql << "(" << QuoteString(row.step) << ", " << QuoteString(row.schema_name) << ", "
+		    << QuoteString(row.table_name) << ", " << QuoteString(row.action) << ", " << QuoteString(status) << ", "
+		    << row.files_processed << "::BIGINT, " << row.files_created << "::BIGINT, " << QuoteString(row.details)
+		    << ")";
 	}
+	sql << ") AS t(step, schema_name, table_name, action, status, files_processed, files_created, details)";
+	return sql.str();
+}
+
+std::string ExecuteScriptFromRows(const std::vector<MaintainRow> &rows, bool execute) {
+	if (!execute) {
+		return PlanRowsSelect(rows, false);
+	}
+	std::ostringstream script;
+	bool any_sql = false;
+	for (const auto &row : rows) {
+		if (row.sql.empty()) {
+			continue;
+		}
+		script << row.sql;
+		if (row.sql.back() != ';') {
+			script << ';';
+		}
+		script << '\n';
+		any_sql = true;
+	}
+	if (!any_sql) {
+		for (const auto &row : rows) {
+			if (row.status == "error") {
+				throw duckdb::InvalidInputException("%s",
+				                                    row.details.empty() ? "lakemon: plan error" : row.details.c_str());
+			}
+		}
+	}
+	script << PlanRowsSelect(rows, true);
+	return script.str();
 }
 
 static void AppendRewriteSkips(std::vector<MaintainRow> &rows, const policy::TableHint &hint, const std::string &reason) {
@@ -75,13 +104,13 @@ static void AppendRewriteSkips(std::vector<MaintainRow> &rows, const policy::Tab
 	}
 }
 
-// Inventory hard-failure: status=error row(s), then stop (do not CALL rewrite/merge
+// Inventory hard-failure: status=error row(s), then stop (do not plan rewrite/merge
 // against an unread catalog). Unread per-table metadata: status=error diagnostic
-// rows; continue with tables that were read. After inventory succeeds, flush,
-// rewrite, and merge are independent: a flush_inlined error is recorded and
-// rewrite/merge still run. Expire / old-file / orphan cleanup are not part of
-// this CALL (see RunGlobalMaintain). InterruptException and bad_alloc rethrow.
-// The session stays usable.
+// rows; continue with tables that were read. This function only plans: flush,
+// rewrite, and merge SQL is returned as status=planned. PRAGMA lakemon_maintain
+// runs that SQL as replacement statements. Expire / old-file / orphan cleanup
+// are not part of this plan (see RunGlobalMaintain). InterruptException and
+// bad_alloc rethrow. The session stays usable.
 std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const MaintainOptions &options) {
 	std::vector<MaintainRow> rows;
 	std::vector<policy::FileStat> files;
@@ -133,9 +162,9 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 
 	const bool catalog_wide = options.table.table.empty();
 
-	AppendCall(rows, context, options.dry_run, "flush_inlined", "ducklake_flush_inlined_data",
-	           FlushInlinedDataCall(options.catalog, options.table), options.table.schema, options.table.table,
-	           "flush inlined rows before rewrite/merge");
+	AppendPlanned(rows, "flush_inlined", "ducklake_flush_inlined_data",
+	              FlushInlinedDataCall(options.catalog, options.table), options.table.schema, options.table.table,
+	              "flush inlined rows before rewrite/merge");
 
 	for (const auto &hint : hints) {
 		TableRef ref;
@@ -157,10 +186,10 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 				                           policy::kSkipNonPositiveRewriteThreshold));
 				continue;
 			}
-			AppendCall(rows, context, options.dry_run, "rewrite", step.band,
-			           RewriteDataFilesCall(options.catalog, ref, step.delete_threshold), hint.schema_name,
-			           hint.table_name, policy::FormatRewriteStepDetails(step),
-			           static_cast<int64_t>(step.files.size()));
+			AppendPlanned(rows, "rewrite", step.band,
+			              RewriteDataFilesCall(options.catalog, ref, step.delete_threshold), hint.schema_name,
+			              hint.table_name, policy::FormatRewriteStepDetails(step),
+			              static_cast<int64_t>(step.files.size()));
 		}
 	}
 
@@ -201,35 +230,17 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 				std::ostringstream sql;
 				sql << "CALL ducklake_set_option(" << QuoteString(options.catalog) << ", 'target_file_size', "
 				    << QuoteString(target) << ")";
-				if (options.dry_run) {
-					rows.push_back(MakeRow("merge", hint.schema_name, hint.table_name,
-					                       std::string("set_target_") + tier.name, "planned", 0, 0, sql.str()));
-				} else {
-					try {
-						RunSQL(context, sql.str());
-					} catch (const duckdb::InterruptException &) {
-						throw;
-					} catch (const std::bad_alloc &) {
-						throw;
-					} catch (const Exception &ex) {
-						rows.push_back(MakeRow("merge", hint.schema_name, hint.table_name,
-						                       std::string("set_target_") + tier.name, "error", 0, 0, SafeWhat(ex)));
-						continue;
-					} catch (const std::exception &ex) {
-						rows.push_back(MakeRow("merge", hint.schema_name, hint.table_name,
-						                       std::string("set_target_") + tier.name, "error", 0, 0, SafeWhat(ex)));
-						continue;
-					}
-				}
+				AppendPlanned(rows, "merge", std::string("set_target_") + tier.name, sql.str(), hint.schema_name,
+				              hint.table_name, sql.str());
 			}
 			std::ostringstream merge_sql;
 			merge_sql << "CALL ducklake_merge_adjacent_files(" << QuoteString(options.catalog) << TableArg(ref)
 			          << SchemaNamed(ref) << ", min_file_size => " << tier.min_file_size
 			          << ", max_file_size => " << tier.max_file_size << ", max_compacted_files => " << cap << ")";
-			AppendCall(rows, context, options.dry_run, "merge", std::string("tier_") + tier.name, merge_sql.str(),
-			           hint.schema_name, hint.table_name,
-			           std::string("band ") + std::to_string(tier.min_file_size) + "-" +
-			               std::to_string(tier.max_file_size) + " -> " + target);
+			AppendPlanned(rows, "merge", std::string("tier_") + tier.name, merge_sql.str(), hint.schema_name,
+			              hint.table_name,
+			              std::string("band ") + std::to_string(tier.min_file_size) + "-" +
+			                  std::to_string(tier.max_file_size) + " -> " + target);
 		}
 	}
 
@@ -283,19 +294,17 @@ std::vector<MaintainRow> RunGlobalMaintain(duckdb::ClientContext &context, const
 		if (const char *skip = ExpireSkipReason(options.skip_expire, expire_interval.empty())) {
 			rows.push_back(MakeRow("expire_snapshots", "", "", "expire", "skip", 0, 0, skip));
 		} else {
-			AppendCall(rows, context, options.dry_run, "expire_snapshots", "expire",
-			           ExpireSnapshotsCall(options.catalog, expire_interval), "", "",
-			           "older_than=" + expire_interval);
+			AppendPlanned(rows, "expire_snapshots", "expire", ExpireSnapshotsCall(options.catalog, expire_interval),
+			              "", "", "older_than=" + expire_interval);
 		}
 
 		if (!ShouldRunCleanup(options.skip_cleanup)) {
 			rows.push_back(MakeRow("cleanup_old_files", "", "", "cleanup", "skip", 0, 0, "skip_cleanup"));
 		} else {
-			AppendCall(rows, context, options.dry_run, "cleanup_old_files", "cleanup",
-			           CleanupOldFilesCall(options.catalog, delete_interval), "", "",
-			           delete_interval.empty() ? "cleanup_all" : "older_than=" + delete_interval);
-			AppendCall(rows, context, options.dry_run, "delete_orphaned_files", "cleanup",
-			           DeleteOrphanedFilesCall(options.catalog), "", "", "remove unreferenced files");
+			AppendPlanned(rows, "cleanup_old_files", "cleanup", CleanupOldFilesCall(options.catalog, delete_interval),
+			              "", "", delete_interval.empty() ? "cleanup_all" : "older_than=" + delete_interval);
+			AppendPlanned(rows, "delete_orphaned_files", "cleanup", DeleteOrphanedFilesCall(options.catalog), "", "",
+			              "remove unreferenced files");
 		}
 
 		return rows;

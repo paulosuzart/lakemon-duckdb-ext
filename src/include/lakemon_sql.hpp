@@ -89,16 +89,22 @@ inline std::string RewriteDataFilesCall(const std::string &catalog, const TableR
 	return sql.str();
 }
 
+// Cast now() to TIMESTAMP so older_than binds without ICU (TIMESTAMPTZ interval
+// arithmetic is what requires the icu extension).
+inline std::string TimestampMinusInterval(const std::string &older_than) {
+	return "now()::TIMESTAMP - INTERVAL " + QuoteString(older_than);
+}
+
 inline std::string ExpireSnapshotsCall(const std::string &catalog, const std::string &older_than) {
-	return "CALL ducklake_expire_snapshots(" + QuoteString(catalog) + ", older_than => now() - INTERVAL " +
-	       QuoteString(older_than) + ")";
+	return "CALL ducklake_expire_snapshots(" + QuoteString(catalog) + ", older_than => " +
+	       TimestampMinusInterval(older_than) + ")";
 }
 
 inline std::string CleanupOldFilesCall(const std::string &catalog, const std::string &older_than) {
 	std::ostringstream sql;
 	sql << "CALL ducklake_cleanup_old_files(" << QuoteString(catalog);
 	if (!older_than.empty()) {
-		sql << ", older_than => now() - INTERVAL " << QuoteString(older_than);
+		sql << ", older_than => " << TimestampMinusInterval(older_than);
 	} else {
 		sql << ", cleanup_all => true";
 	}

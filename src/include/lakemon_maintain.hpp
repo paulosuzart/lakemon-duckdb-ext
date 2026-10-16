@@ -37,9 +37,15 @@ struct MaintainRow {
 	int64_t files_processed = 0;
 	int64_t files_created = 0;
 	std::string details;
+	// DuckLake / catalog SQL for this step. Empty for skip / inventory-only rows.
+	std::string sql;
 };
 
 std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const MaintainOptions &options);
 std::vector<MaintainRow> RunGlobalMaintain(duckdb::ClientContext &context, const GlobalMaintainOptions &options);
+
+// PRAGMA replacement: planned DuckLake statements (when execute) plus a final
+// SELECT of step rows. Table functions never run these statements themselves.
+std::string ExecuteScriptFromRows(const std::vector<MaintainRow> &rows, bool execute);
 
 } // namespace lakemon

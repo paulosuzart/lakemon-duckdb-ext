@@ -1,0 +1,28 @@
+# name: test/sql/lakemon_expire_no_icu.test
+# description: expire/cleanup older_than binds without ICU
+# group: [sql]
+
+require lakemon
+
+# This file does not require icu. now()::TIMESTAMP - INTERVAL is core DuckDB.
+query I
+SELECT typeof(now()::TIMESTAMP - INTERVAL '7 days');
+----
+TIMESTAMP
+
+query I
+SELECT (now()::TIMESTAMP - INTERVAL '7 days') IS NOT NULL;
+----
+true
+
+query I
+SELECT count(*) FROM lakemon_maintain_global('no_such_lake', dry_run => true, expire_older_than => '7 days', skip_cleanup => true)
+WHERE step = 'expire_snapshots' AND details LIKE '%now()::TIMESTAMP - INTERVAL ''7 days''%';
+----
+1
+
+query I
+SELECT count(*) FROM lakemon_maintain_global('no_such_lake', dry_run => true, skip_expire => true, delete_older_than => '3 days')
+WHERE step = 'cleanup_old_files' AND details LIKE '%now()::TIMESTAMP - INTERVAL ''3 days''%';
+----
+1

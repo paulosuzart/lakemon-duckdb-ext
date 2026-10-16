@@ -21,3 +21,9 @@ policy-test:
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -I$(PROJ_DIR)src/include -I$(PROJ_DIR)test/policy \
 		-o $(PROJ_DIR)test/policy/test_sql $(PROJ_DIR)test/policy/test_sql.cpp
 	$(PROJ_DIR)test/policy/test_sql
+
+# Execute flush+merge and expire against a real lake. A hang fails via timeout.
+.PHONY: lake-test
+LAKE_TEST_TIMEOUT ?= 60
+lake-test:
+	python3 $(PROJ_DIR)test/run_execute.py $(LAKE_TEST_TIMEOUT)

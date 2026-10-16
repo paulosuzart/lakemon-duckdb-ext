@@ -11,11 +11,12 @@
 
 DuckDB extension for DuckLake maintenance.
 
-**Maintain a DuckLake from SQL: expire old snapshots, rewrite files with deleted rows (worst first, in byte-weighted steps), and merge small files into right-sized ones.** One `CALL` per table pass, one `CALL` for catalog retention, and a result row for every step it took.
+**Maintain a DuckLake from SQL: expire old snapshots, rewrite files with deleted rows (worst first, in byte-weighted steps), and merge small files into right-sized ones.** One `PRAGMA` per table pass, one `PRAGMA` for catalog retention. `CALL` returns the plan.
 
 ```sql
-CALL lakemon_maintain('lake');         -- flush, rewrite deleted bytes, merge small files
-CALL lakemon_maintain_global('lake');  -- expire snapshots, clean up old and orphaned files
+PRAGMA lakemon_maintain('lake');         -- flush, rewrite deleted bytes, merge small files
+PRAGMA lakemon_maintain_global('lake');  -- expire snapshots, clean up old and orphaned files
+CALL lakemon_maintain('lake');           -- plan only: one row per step, including the SQL
 ```
 
 ## Why
@@ -27,7 +28,7 @@ lakemon is that decision layer. It reads DuckLake metadata, plans the work, and 
 - **Rewrites the worst files first.** Files are ranked by delete fraction and cut into up to `max_rewrite_steps` (default `3`) `ducklake_rewrite_data_files` `CALL`s by cumulative bytes, so the most-deleted data is rewritten first and no single `CALL` has to rewrite every dirty file.
 - **Merges by size band.** Micro, small, and medium files are compacted separately, each with its own `target_file_size`.
 - **Splits table work from catalog retention.** `lakemon_maintain` handles tables (all of them, or one); `lakemon_maintain_global` handles expire and cleanup once per catalog.
-- **Shows its plan.** `dry_run => true` returns the exact `CALL`s it would run. Executed runs return one row per step with `ok` / `skip` / `error`.
+- **Shows its plan.** `CALL lakemon_maintain` / `CALL lakemon_maintain_global` always plan (`status = planned` plus the generated SQL). `PRAGMA` of the same name runs that SQL.
 - **Respects your catalog.** Native DuckLake options (`rewrite_delete_threshold`, `target_file_size`, `expire_older_than`, `delete_older_than`, `auto_compact`) set via `set_option` override lakemon's defaults.
 
 ## Who it is for
@@ -51,19 +52,20 @@ ATTACH 'ducklake:metadata.ducklake' AS lake (DATA_PATH 'data_files');
 -- What does each table look like, and what would lakemon do?
 CALL lakemon_table_stats('lake');
 
--- Plan only: returns the CALLs without running them
-CALL lakemon_maintain('lake', dry_run => true);
-CALL lakemon_maintain_global('lake', dry_run => true);
-
--- Run it: table work first, then catalog retention
+-- Plan only: returns the DuckLake CALLs without running them
 CALL lakemon_maintain('lake');
 CALL lakemon_maintain_global('lake');
+
+-- Run it: table work first, then catalog retention
+PRAGMA lakemon_maintain('lake');
+PRAGMA lakemon_maintain_global('lake');
 ```
 
 Single table:
 
 ```sql
-CALL lakemon_maintain('lake', 'myschema.t'); CALL lakemon_maintain_global('lake');
+PRAGMA lakemon_maintain('lake', 'myschema.t');
+PRAGMA lakemon_maintain_global('lake');
 ```
 
 ## Requirements
@@ -91,6 +93,10 @@ See [community/README.md](community/README.md) for the remaining listing steps.
 
 ## How it works
 
+`CALL` / `SELECT FROM` the table functions only **plan**. They never run DuckLake mutation `CALL`s. Doing that from a nested `Connection` inside the table function init waits on the catalog/transaction lock held by the outer query (execute hung forever; `dry_run` was fine). There is no supported way to run those statements on a second connection while the outer query is still executing.
+
+**Execute is `PRAGMA lakemon_maintain(...)` / `PRAGMA lakemon_maintain_global(...)`.** The pragma callback plans, then returns the statement list as a multi-statement query string. DuckDB substitutes that string for the `PRAGMA` and runs it as the query itself — the official replacement-query path, not a nested connection. Named parameters match the `CALL` forms (`dry_run`, `max_compacted_files`, `expire_older_than`, …). `dry_run = true` on the pragma returns only the plan `SELECT`.
+
 ### Table pass: `lakemon_maintain`
 
 For each table (or the one you name), in order:
@@ -100,7 +106,7 @@ For each table (or the one you name), in order:
 3. `ducklake_rewrite_data_files`, once per rewrite rung, worst delete fraction first
 4. `ducklake_merge_adjacent_files`, once per size band that has at least two files
 
-After inventory succeeds, flush, rewrite, and merge are independent. A failed `flush_inlined` is recorded as `status = error` and does **not** skip rewrite or merge.
+After inventory succeeds, flush, rewrite, and merge are planned independently. `PRAGMA` execute is fail-fast: a failed statement stops the rest of the batch.
 
 ### Catalog pass: `lakemon_maintain_global`
 
@@ -156,7 +162,7 @@ Files ≥ 64 MiB are left alone. A catalog `target_file_size` informs the merge 
 
 - Persisted lakemon policy (`CALL lakemon_set_policy`) holds the rewrite ladder and merge bands, stored in `__lakemon.policy` (not DuckLake `set_option` keys).
 - Native DuckLake options (`rewrite_delete_threshold`, `target_file_size`, `expire_older_than`, `delete_older_than`, `auto_compact`) resolve table → schema → global, whether set via `set_option` or already present in the catalog.
-- `lakemon_maintain` named parameters override table work for that `CALL`; `lakemon_maintain_global` named parameters override expire/cleanup intervals.
+- `lakemon_maintain` named parameters override table work for that `CALL` / `PRAGMA`; `lakemon_maintain_global` named parameters override expire/cleanup intervals.
 
 ## API reference
 
@@ -166,10 +172,12 @@ CALL lakemon_table_stats('lake', 'myschema.t');
 
 CALL lakemon_maintain('lake');
 CALL lakemon_maintain('lake', 'myschema.t');
-CALL lakemon_maintain('lake', dry_run => true);
+PRAGMA lakemon_maintain('lake');
+PRAGMA lakemon_maintain('lake', 'myschema.t');
 
 CALL lakemon_maintain_global('lake');
-CALL lakemon_maintain_global('lake', dry_run => true);
+PRAGMA lakemon_maintain_global('lake');
+PRAGMA lakemon_maintain_global('lake', expire_older_than='7 days');
 
 -- Built-in ladder and merge bands
 CALL lakemon_policy();
@@ -182,38 +190,38 @@ CALL lakemon_set_policy('lake', 'merge_tier', 'micro', target_file_size => '8MB'
 SELECT lakemon_version();
 ```
 
-### `CALL lakemon_maintain(catalog [, table])`
+### `CALL` / `PRAGMA lakemon_maintain(catalog [, table])`
 
-Table work only: inventory, flush, rewrite, merge. Does **not** run `ducklake_expire_snapshots`, `ducklake_cleanup_old_files`, or `ducklake_delete_orphaned_files`; retention parameters (`skip_expire`, `skip_cleanup`, `expire_older_than`, `delete_older_than`) belong on `lakemon_maintain_global`.
+Table work only: inventory, flush, rewrite, merge. Does **not** expire snapshots or clean old/orphan files; retention parameters (`skip_expire`, `skip_cleanup`, `expire_older_than`, `delete_older_than`) belong on `lakemon_maintain_global`.
 
 | Named parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `dry_run` | `BOOLEAN` | `false` | Plan steps without calling DuckLake |
+| `dry_run` | `BOOLEAN` | `false` | On `PRAGMA` only: plan without running DuckLake SQL. Ignored on `CALL` (always plans). |
 | `max_compacted_files` | `BIGINT` | tier default | Cap per merge-tier `CALL` |
 
-`table` may be `table` (schema `main`) or `schema.table`. Catalog-wide `CALL lakemon_maintain('lake')` loops every table and skips tables with `auto_compact = false`; an explicit table argument still maintains that table.
+`table` may be `table` (schema `main`) or `schema.table`. Catalog-wide `lakemon_maintain('lake')` loops every table and skips tables with `auto_compact = false`; an explicit table argument still maintains that table.
 
 Result columns: `step`, `schema_name`, `table_name`, `action`, `status`, `files_processed`, `files_created`, `details`.
 
-Rewrite emits **one result row per planned rung** (`action` is `rung_1` / `rung_2` / …, or `catalog` when DuckLake `rewrite_delete_threshold` is set). `details` always includes `band`, `delete_threshold`, `planned_files`, `planned_bytes`, and `planned_deletes`. `files_processed` is that rung's planned file count. `dry_run => true` sets `status=planned` and appends the generated `CALL`. After execute, `status` is `ok` / `skip` / `error`: `ok` appends `created=` (DuckLake result rows), `error` keeps the planned counts and appends the message, and `auto_compact` skips still list each computed rung.
+`CALL` always sets `status=planned` and appends the generated SQL in `details`. Rewrite emits **one result row per planned rung** (`action` is `rung_1` / `rung_2` / …, or `catalog` when DuckLake `rewrite_delete_threshold` is set). `details` always includes `band`, `delete_threshold`, `planned_files`, `planned_bytes`, and `planned_deletes`. `files_processed` is that rung's planned file count. `auto_compact` skips still list each computed rung.
 
-Errors: a failed catalog inventory or nested DuckLake `CALL` becomes `status = error` (`details` holds the message). Unread per-table metadata is an inventory `error` row (not a silent drop); tables that were read still proceed. A total inventory failure stops the plan. The DuckDB session stays usable. Interrupt and out-of-memory are not swallowed.
+`PRAGMA` plans, then runs the non-skip SQL as sequential statements. The last statement is a `SELECT` of the same columns (`status=ok` for statements that ran). A failed statement stops the rest of the batch and surfaces as a DuckDB error; the session stays usable. Unread per-table metadata is an inventory `error` row (not a silent drop); tables that were read still proceed. A total inventory failure stops the plan. Interrupt and out-of-memory are not swallowed.
 
-### `CALL lakemon_maintain_global(catalog)`
+### `CALL` / `PRAGMA lakemon_maintain_global(catalog)`
 
 Catalog-global retention only. Does **not** flush, rewrite, or merge tables.
 
 | Named parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `dry_run` | `BOOLEAN` | `false` | Plan steps without calling DuckLake |
+| `dry_run` | `BOOLEAN` | `false` | On `PRAGMA` only: plan without running DuckLake SQL. Ignored on `CALL` (always plans). |
 | `skip_expire` | `BOOLEAN` | `false` | Skip snapshot expiration |
 | `skip_cleanup` | `BOOLEAN` | `false` | Skip old-file and orphan cleanup |
 | `expire_older_than` | `VARCHAR` | unset | Interval literal, e.g. `'7 days'` (skipped if unset) |
 | `delete_older_than` | `VARCHAR` | unset | Interval literal for cleanup; otherwise `cleanup_all => true` |
 
-When a named interval is omitted, lakemon uses `expire_older_than` / `delete_older_than` from `ducklake_options` / `catalog.options()` (usually global). Expire is skipped when no interval is set. Cleanup still runs with `cleanup_all => true` unless `skip_cleanup`.
+When a named interval is omitted, lakemon uses `expire_older_than` / `delete_older_than` from `ducklake_options` / `catalog.options()` (usually global). Expire is skipped when no interval is set. Cleanup still runs with `cleanup_all => true` unless `skip_cleanup`. `older_than` is `now()::TIMESTAMP - INTERVAL …` so the expression binds without ICU.
 
-Same result columns as `lakemon_maintain`; global steps leave `schema_name` / `table_name` empty. A nested DuckLake `CALL` failure becomes `status = error`; the session stays usable.
+Same result columns as `lakemon_maintain`; global steps leave `schema_name` / `table_name` empty. `CALL` plans; `PRAGMA` executes (same replacement-query path as table maintain).
 
 ### `CALL lakemon_table_stats(catalog [, table])`
 
@@ -257,12 +265,12 @@ Scalar function returning the extension version string.
 
 ## Operating tips
 
-- **Plan before you run.** `lakemon_table_stats` and `dry_run => true` show the rungs (threshold, files, bytes), merge targets, and `auto_compact` skips before any file is touched.
-- **Large backlog.** lakemon has no wall-clock budget today. Prefer one table at a time (`CALL lakemon_maintain('lake', 'schema.t')`) then `CALL lakemon_maintain_global('lake')`, a tighter policy via `lakemon_set_policy` / DuckLake `set_option`, or native `CALL`s with file caps (`max_compacted_files`). An unbounded full-catalog table pass can run a long time. Expire and orphan cleanup are catalog-global and do not need a per-table loop.
+- **Plan before you run.** `lakemon_table_stats` and `CALL lakemon_maintain` / `CALL lakemon_maintain_global` show the rungs (threshold, files, bytes), merge targets, and `auto_compact` skips before any file is touched.
+- **Large backlog.** lakemon has no wall-clock budget today. Prefer one table at a time (`PRAGMA lakemon_maintain('lake', 'schema.t')`) then `PRAGMA lakemon_maintain_global('lake')`, a tighter policy via `lakemon_set_policy` / DuckLake `set_option`, or native `CALL`s with file caps (`max_compacted_files`). An unbounded full-catalog table pass can run a long time. Expire and orphan cleanup are catalog-global and do not need a per-table loop.
 - **Single step by hand.** For one table step, call the native DuckLake functions directly (`ducklake_flush_inlined_data`, `ducklake_rewrite_data_files`, `ducklake_merge_adjacent_files`, `ducklake_expire_snapshots`, `ducklake_cleanup_old_files`, `ducklake_delete_orphaned_files`).
 - **Zero rewrite threshold.** lakemon never plans or executes `ducklake_rewrite_data_files` with `delete_threshold` 0.0 (or <= 0). Use the native `CALL ducklake_rewrite_data_files(..., delete_threshold => 0)` if you need that.
 
-**Breaking change from earlier builds:** `lakemon_maintain` no longer expires snapshots or cleans old/orphan files. Run table maintain, then global, for example `CALL lakemon_maintain('lake', 's.t'); CALL lakemon_maintain_global('lake');`.
+**Breaking change from earlier builds:** `CALL lakemon_maintain` / `CALL lakemon_maintain_global` only plan. Execute with `PRAGMA lakemon_maintain(...)` / `PRAGMA lakemon_maintain_global(...)`. Table maintain still does not expire snapshots or clean old/orphan files; run table then global, for example `PRAGMA lakemon_maintain('lake', 's.t'); PRAGMA lakemon_maintain_global('lake');`.
 
 ## Building
 
@@ -277,8 +285,9 @@ Optional: `ccache` and `ninja` (`GEN=ninja make`) for faster rebuilds. No vcpkg 
 
 ```shell
 make                 # builds DuckDB + the extension
-make test            # SQL tests (extension smoke)
+make test            # SQL tests (extension smoke + lake execute when ducklake is built)
 make policy-test     # header-only policy tests (no DuckDB)
+make lake-test       # file-backed lake execute with a 60s hang timeout
 ```
 
 Binaries:
@@ -293,11 +302,12 @@ The in-tree shell already loads `lakemon`.
 
 ## Tests
 
-- `make policy-test` — rewrite-ladder / merge-tier math, DuckLake option precedence, persisted policy overlays, and generated DuckLake CALL SQL (no DuckDB, seconds)
-- `make test` — SQL smoke: `lakemon_version`, `lakemon_policy` / `lakemon_set_policy`, bind errors / maintain error rows when no catalog is attached, `lakemon_maintain_global` registration and retention skip/plan rows
+- `make policy-test` — rewrite-ladder / merge-tier math, DuckLake option precedence, persisted policy overlays, and generated DuckLake CALL SQL (no DuckDB, seconds). Includes expire/cleanup `now()::TIMESTAMP` (no ICU).
+- `make test` — SQL smoke: `lakemon_version`, `lakemon_policy` / `lakemon_set_policy`, bind errors / maintain plan rows when no catalog is attached, `lakemon_maintain_global` registration and retention skip/plan rows, ICU-free expire expression, and (when ducklake is built in) file-backed execute of flush+merge and expire
+- `make lake-test` — `test/sql/lakemon_execute.test` under a 60s timeout so a hang fails
 - CI: `make policy-test` on every push/PR. Full DuckDB **1.5.5** and **2.x** (`v2.0-cyanoptera`) distribution builds run on `main`, `v*` tags, or **Actions → Main Extension Distribution Pipeline → Run workflow** (use that before a community listing submit). DuckDB **1.5.3** and **1.5.6** binaries are built only on `v*` tags or that same **Run workflow** path (not on ordinary pushes to `main`).
 
-End-to-end rewrite/merge against a live DuckLake catalog is left to your own lake (CI does not attach a lake). Manual check: `ATTACH` a lake, `CALL lakemon_set_policy(...)` for ladder size / merge bands, `CALL lake.set_option(...)` for the five honored DuckLake keys, then `CALL lakemon_table_stats` / `lakemon_maintain(..., dry_run => true)` and confirm planned rewrite steps (rung + byte-derived threshold, never `0.0`), merge target, and `auto_compact` skips. Confirm expire/cleanup intervals with `CALL lakemon_maintain_global(..., dry_run => true)`.
+Manual check: `ATTACH` a lake, `CALL lakemon_set_policy(...)` for ladder size / merge bands, `CALL lake.set_option(...)` for the five honored DuckLake keys, then `CALL lakemon_table_stats` / `CALL lakemon_maintain(...)` and confirm planned rewrite steps (rung + byte-derived threshold, never `0.0`), merge target, and `auto_compact` skips. Confirm expire/cleanup intervals with `CALL lakemon_maintain_global(...)`. Execute with `PRAGMA`.
 
 ## Community listing
 

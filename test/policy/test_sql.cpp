@@ -63,10 +63,10 @@ static void TestRewriteMergeKeepPositionalTableAndSchema() {
 
 static void TestGlobalRetentionCallsAreCatalogOnly() {
 	Expect(lakemon::ExpireSnapshotsCall("lake", "7 days") ==
-	           "CALL ducklake_expire_snapshots('lake', older_than => now() - INTERVAL '7 days')",
+	           "CALL ducklake_expire_snapshots('lake', older_than => now()::TIMESTAMP - INTERVAL '7 days')",
 	       "expire snapshots is catalog-global");
 	Expect(lakemon::CleanupOldFilesCall("lake", "3 days") ==
-	           "CALL ducklake_cleanup_old_files('lake', older_than => now() - INTERVAL '3 days')",
+	           "CALL ducklake_cleanup_old_files('lake', older_than => now()::TIMESTAMP - INTERVAL '3 days')",
 	       "cleanup uses older_than when set");
 	Expect(lakemon::CleanupOldFilesCall("lake", "") == "CALL ducklake_cleanup_old_files('lake', cleanup_all => true)",
 	       "cleanup_all when delete interval unset");
@@ -75,6 +75,21 @@ static void TestGlobalRetentionCallsAreCatalogOnly() {
 	Expect(!Contains(lakemon::ExpireSnapshotsCall("lake", "7 days"), "table"), "expire has no table argument");
 	Expect(!Contains(lakemon::FlushInlinedDataCall("lake", lakemon::ParseTableRef("s.t")), "expire"),
 	       "table flush CALL does not expire snapshots");
+}
+
+static void TestExpireIntervalBindsWithoutIcu() {
+	const std::string expire = lakemon::ExpireSnapshotsCall("lake", "7 days");
+	const std::string cleanup = lakemon::CleanupOldFilesCall("lake", "3 days");
+	Expect(Contains(expire, "now()::TIMESTAMP - INTERVAL '7 days'"),
+	       "expire older_than casts now() to TIMESTAMP");
+	Expect(Contains(cleanup, "now()::TIMESTAMP - INTERVAL '3 days'"),
+	       "cleanup older_than casts now() to TIMESTAMP");
+	Expect(!Contains(expire, "older_than => now() - INTERVAL"),
+	       "expire must not emit uncast now() - INTERVAL (needs ICU)");
+	Expect(!Contains(cleanup, "older_than => now() - INTERVAL"),
+	       "cleanup must not emit uncast now() - INTERVAL (needs ICU)");
+	Expect(lakemon::TimestampMinusInterval("7 days") == "now()::TIMESTAMP - INTERVAL '7 days'",
+	       "TimestampMinusInterval is the ICU-free older_than fragment");
 }
 
 static void TestRewriteCallNeverUsesZeroThreshold() {
@@ -95,6 +110,7 @@ int main() {
 	TestFlushMainAndEmptySchemaOmitSchemaName();
 	TestRewriteMergeKeepPositionalTableAndSchema();
 	TestGlobalRetentionCallsAreCatalogOnly();
+	TestExpireIntervalBindsWithoutIcu();
 	TestRewriteCallNeverUsesZeroThreshold();
 	if (TestFailures()) {
 		std::cerr << TestFailures() << " failure(s)" << std::endl;

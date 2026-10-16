@@ -176,9 +176,11 @@ inline void FinishChunk(duckdb::DataChunk &output, duckdb::idx_t count) {
 #endif
 }
 
-// 1.5: TableFunction::named_parameters. 2.x: typed **kwargs on the signature.
+// 1.5: named_parameters map. 2.x: typed **kwargs on the signature.
+// Works for TableFunction and PragmaFunction.
+template <typename FunctionT>
 inline void AddNamedParameters(
-    duckdb::TableFunction &function,
+    FunctionT &function,
     std::initializer_list<std::pair<const char *, duckdb::LogicalType>> params) {
 #if LAKEMON_DUCKDB_2
 	duckdb::TypedKwargs options;
