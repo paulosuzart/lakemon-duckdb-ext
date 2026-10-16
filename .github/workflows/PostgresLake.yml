@@ -1,0 +1,78 @@
+#
+# Real execute against a Postgres DuckLake catalog.
+# Runs on every pull_request and push so the PR check can go green.
+# DuckDB 1.5.5 and 2.x, linux_amd64 only (not the distribution matrix).
+#
+name: Postgres lake execute
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}
+  cancel-in-progress: true
+
+jobs:
+  postgres-lake:
+    name: Postgres DuckLake execute (${{ matrix.duckdb_version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - duckdb_version: v1.5.5
+            ci_tools_version: v1.5.5
+          - duckdb_version: v2.0-cyanoptera
+            ci_tools_version: main
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lakemon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lakemon"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      LAKEMON_CI_POSTGRES: "1"
+      LAKEMON_PG: dbname=lakemon host=127.0.0.1 port=5432 user=postgres password=postgres
+      GEN: ninja
+      DISABLE_SANITIZER: "1"
+      BUILD_EXTENSION_TEST_DEPS: none
+      CORE_EXTENSIONS: parquet
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache libpq-dev
+
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: postgres-lake-${{ matrix.duckdb_version }}-${{ runner.os }}
+          max-size: 2G
+
+      - name: Checkout DuckDB ${{ matrix.duckdb_version }}
+        run: |
+          rm -rf duckdb extension-ci-tools
+          git clone --depth 1 --branch "${{ matrix.duckdb_version }}" https://github.com/duckdb/duckdb.git duckdb
+          git clone --depth 1 --branch "${{ matrix.ci_tools_version }}" https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+
+      - name: Build lakemon + ducklake + postgres_scanner
+        run: make -j"$(nproc)"
+
+      - name: Execute maintain + expire on Postgres catalog
+        timeout-minutes: 2
+        run: |
+          python3 test/run_postgres_lake.py --timeout 90

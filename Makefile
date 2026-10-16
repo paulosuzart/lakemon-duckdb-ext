@@ -27,3 +27,9 @@ policy-test:
 LAKE_TEST_TIMEOUT ?= 60
 lake-test:
 	python3 $(PROJ_DIR)test/run_execute.py $(LAKE_TEST_TIMEOUT)
+
+# Postgres DuckLake catalog (needs a running Postgres and a build with LAKEMON_CI_POSTGRES=1).
+.PHONY: postgres-lake-test
+LAKE_PG_TIMEOUT ?= 90
+postgres-lake-test:
+	python3 $(PROJ_DIR)test/run_postgres_lake.py --timeout $(LAKE_PG_TIMEOUT)

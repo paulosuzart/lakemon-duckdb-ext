@@ -23,3 +23,15 @@ if (EXISTS "${_lakemon_ducklake_cmake}")
   endif()
 endif()
 
+# PR CI only: postgres_scanner so DuckLake can use a Postgres catalog.
+# Do not set LAKEMON_CI_POSTGRES on the distribution pipeline (needs libpq).
+if (DEFINED ENV{LAKEMON_CI_POSTGRES} AND NOT "$ENV{LAKEMON_CI_POSTGRES}" STREQUAL "")
+  if (NOT DEFINED WASM_ENABLED)
+    set(WASM_ENABLED FALSE)
+  endif()
+  set(_lakemon_pg_cmake "${CMAKE_CURRENT_LIST_DIR}/duckdb/.github/config/extensions/postgres_scanner.cmake")
+  if (EXISTS "${_lakemon_pg_cmake}")
+    include("${_lakemon_pg_cmake}")
+  endif()
+endif()
+
