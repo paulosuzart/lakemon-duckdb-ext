@@ -50,6 +50,9 @@ jobs:
       DISABLE_SANITIZER: "1"
       BUILD_EXTENSION_TEST_DEPS: none
       CORE_EXTENSIONS: parquet
+      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      VCPKG_TARGET_TRIPLET: x64-linux
+      USE_MERGED_VCPKG_MANIFEST: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -68,6 +71,11 @@ jobs:
           rm -rf duckdb extension-ci-tools
           git clone --depth 1 --branch "${{ matrix.duckdb_version }}" https://github.com/duckdb/duckdb.git duckdb
           git clone --depth 1 --branch "${{ matrix.ci_tools_version }}" https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 84bab45d415d22042bd0b9081aea57f362da3f35
 
       - name: Build lakemon + ducklake + postgres_scanner
         run: make -j"$(nproc)"

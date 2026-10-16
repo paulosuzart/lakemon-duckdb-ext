@@ -15,11 +15,19 @@ if (EXISTS "${_lakemon_ducklake_cmake}")
   string(REGEX MATCH "GIT_TAG[ \t]+([0-9a-fA-F]+)" _lakemon_ducklake_tag_match "${_lakemon_ducklake_contents}")
   set(_lakemon_ducklake_tag "${CMAKE_MATCH_1}")
   if (_lakemon_ducklake_url AND _lakemon_ducklake_tag AND NOT EMSCRIPTEN)
-    duckdb_extension_load(ducklake
-      GIT_URL ${_lakemon_ducklake_url}
-      GIT_TAG ${_lakemon_ducklake_tag}
-      APPLY_PATCHES
-    )
+    set(_lakemon_ducklake_patches "${CMAKE_CURRENT_LIST_DIR}/duckdb/.github/patches/extensions/ducklake")
+    if (EXISTS "${_lakemon_ducklake_patches}")
+      duckdb_extension_load(ducklake
+        GIT_URL ${_lakemon_ducklake_url}
+        GIT_TAG ${_lakemon_ducklake_tag}
+        APPLY_PATCHES
+      )
+    else()
+      duckdb_extension_load(ducklake
+        GIT_URL ${_lakemon_ducklake_url}
+        GIT_TAG ${_lakemon_ducklake_tag}
+      )
+    endif()
   endif()
 endif()
 
