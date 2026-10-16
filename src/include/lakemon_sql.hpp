@@ -127,9 +127,9 @@ inline std::string CallStatementToTableFunction(const std::string &sql) {
 }
 
 // Sequential same-plan execute: MATERIALIZED CTEs plus a predicate on the
-// previous count so flush / rewrite / merge cannot run in parallel. Each CTE is
-// COUNT(*) FROM <ducklake table function>, which binds through ducklake's
-// bind_operator on the outer ClientContext (no nested Connection).
+// previous count so flush / rewrite / merge cannot run in parallel. Each CTE
+// does SELECT * FROM <ducklake table function> (so bind_operator mutations
+// run) wrapped in COUNT(*) (one row for CROSS JOIN) on the outer ClientContext.
 inline std::string SamePlanExecuteSelect(const std::string &plan_select, const std::vector<std::string> &call_sqls) {
 	if (call_sqls.empty()) {
 		return plan_select;
@@ -140,12 +140,14 @@ inline std::string SamePlanExecuteSelect(const std::string &plan_select, const s
 		if (i > 0) {
 			sql << ", ";
 		}
-		sql << "lakemon_step_" << i << " AS MATERIALIZED (SELECT COUNT(*)::BIGINT AS c FROM "
+		// SELECT * FROM the DuckLake TF so bind_operator mutations run; wrap in
+		// COUNT(*) so each CTE is one row and CROSS JOIN cannot drop plan rows.
+		sql << "lakemon_step_" << i << " AS MATERIALIZED (SELECT COUNT(*)::BIGINT AS c FROM (SELECT * FROM "
 		    << CallStatementToTableFunction(call_sqls[i]);
 		if (i > 0) {
 			sql << " WHERE (SELECT c FROM lakemon_step_" << (i - 1) << ") IS NOT NULL";
 		}
-		sql << ")";
+		sql << ") AS lakemon_exec_" << i << ")";
 	}
 	sql << " SELECT lakemon_plan.* FROM (" << plan_select << ") AS lakemon_plan";
 	for (size_t i = 0; i < call_sqls.size(); i++) {

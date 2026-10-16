@@ -29,18 +29,22 @@ class Failed(Exception):
 	pass
 
 
-def find_postgres_extension(build_dir: Path) -> str | None:
-	candidates = [
-		build_dir / "extension" / "postgres_scanner" / "postgres_scanner.duckdb_extension",
-		build_dir / "extension" / "postgres" / "postgres.duckdb_extension",
-		build_dir / "repository" / "v1.5.5" / "linux_amd64" / "postgres_scanner.duckdb_extension",
-	]
-	for path in candidates:
-		if path.is_file():
+def find_extension(build_dir: Path, *names: str) -> str | None:
+	for name in names:
+		candidates = [
+			build_dir / "extension" / name / f"{name}.duckdb_extension",
+			build_dir / "repository" / "v1.5.5" / "linux_amd64" / f"{name}.duckdb_extension",
+		]
+		for path in candidates:
+			if path.is_file():
+				return str(path)
+		for path in build_dir.rglob(f"{name}*.duckdb_extension"):
 			return str(path)
-	for path in build_dir.rglob("postgres*.duckdb_extension"):
-		return str(path)
 	return None
+
+
+def find_postgres_extension(build_dir: Path) -> str | None:
+	return find_extension(build_dir, "postgres_scanner", "postgres")
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,11 +62,7 @@ def parse_args() -> argparse.Namespace:
 	return parser.parse_args()
 
 
-def probe_postgres_load(duckdb: str, ext_path: str | None) -> str:
-	candidates = ["LOAD postgres;", "LOAD postgres_scanner;"]
-	if ext_path:
-		candidates.append(f"LOAD '{ext_path}';")
-	candidates.append("INSTALL postgres; LOAD postgres;")
+def probe_load(duckdb: str, candidates: list[str], what: str) -> str:
 	errors = []
 	for sql in candidates:
 		try:
@@ -80,15 +80,44 @@ def probe_postgres_load(duckdb: str, ext_path: str | None) -> str:
 		if result.returncode == 0:
 			return sql
 		errors.append(f"{sql} -> {result.stderr.strip() or result.stdout.strip()}")
-	raise Failed("could not load the postgres extension:\n" + "\n".join(errors))
+	raise Failed(f"could not load {what}:\n" + "\n".join(errors))
+
+
+def probe_postgres_load(duckdb: str, ext_path: str | None) -> str:
+	candidates = ["LOAD postgres;", "LOAD postgres_scanner;"]
+	if ext_path:
+		candidates.append(f"LOAD '{ext_path}';")
+	candidates.append("INSTALL postgres; LOAD postgres;")
+	return probe_load(duckdb, candidates, "the postgres extension")
+
+
+def probe_named_load(duckdb: str, name: str, ext_path: str | None, verify_sql: str = "",
+                     optional: bool = False) -> str:
+	loads = []
+	if ext_path:
+		loads.append(f"LOAD '{ext_path}';")
+	loads.append(f"LOAD {name};")
+	if optional or verify_sql:
+		loads.append("")
+	errors = []
+	for load in loads:
+		script = f"{load}\n{verify_sql}" if verify_sql else (load or "SELECT 1;")
+		try:
+			probe_load(duckdb, [script], f"the {name} extension")
+			return load
+		except Failed as exc:
+			errors.append(str(exc))
+	if optional:
+		return ""
+	raise Failed(f"could not load the {name} extension:\n" + "\n".join(errors))
 
 
 class LakeSession:
-	def __init__(self, duckdb: str, pg: str, data_path: str, postgres_load: str) -> None:
+	def __init__(self, duckdb: str, pg: str, data_path: str, loads: list[str]) -> None:
 		self.duckdb = duckdb
 		self.pg = pg
 		self.data_path = data_path
-		self.postgres_load = postgres_load
+		self.loads = loads
 		self.inlining_row_limit = 10
 
 	def preamble(self) -> str:
@@ -96,7 +125,7 @@ class LakeSession:
 			f"ATTACH 'ducklake:postgres:{self.pg}' AS {CATALOG} "
 			f"(DATA_PATH '{self.data_path}', DATA_INLINING_ROW_LIMIT {self.inlining_row_limit});"
 		)
-		return f"{self.postgres_load}\n{attach}"
+		return "\n".join([part for part in self.loads if part] + [attach])
 
 	def run(self, sql: str, timeout: int | None = None) -> str:
 		script = self.preamble() + "\n" + sql
@@ -276,19 +305,15 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 		raise Failed(f"row count changed during maintain: {rows_before} -> {count_rows(session)}")
 
 	inlined_after = count_inlined_rows(session)
-	if inlined_before > 0 and inlined_after != 0:
-		raise Failed(f"inlined data not flushed: {inlined_after} live inlined rows remain")
-	# Flush must have materialized the inlined seed even if the registry was empty.
-	if inlined_before <= 0:
-		leftover = session.query_int(
-			f"SELECT count(*)::BIGINT AS n FROM ducklake_flush_inlined_data('{CATALOG}', "
-			f"table_name => '{TABLE}', schema_name => '{SCHEMA}');"
-		)
-		if leftover != 0:
-			raise Failed(f"flush still had {leftover} tables with inlined data")
+	leftover = session.query_int(
+		f"SELECT count(*)::BIGINT AS n FROM ducklake_flush_inlined_data('{CATALOG}', "
+		f"table_name => '{TABLE}', schema_name => '{SCHEMA}');"
+	)
+	if leftover != 0:
+		raise Failed(f"inlined data not flushed: ducklake_flush_inlined_data still reports {leftover} rows")
 
 	files_after = count_files(session)
-	print(f"after maintain: files={files_after} inlined_rows={inlined_after}")
+	print(f"after maintain: files={files_after} inlined_rows={inlined_after} leftover_flush={leftover}")
 	if files_after >= files_before:
 		raise Failed(f"merge did not reduce data files: {files_before} -> {files_after}")
 
@@ -325,13 +350,24 @@ def main() -> int:
 		return 1
 	data_path = args.data_path or str(Path(tempfile.mkdtemp(prefix="lakemon_pg_data_")))
 	Path(data_path).mkdir(parents=True, exist_ok=True)
-	postgres_ext = find_postgres_extension(duckdb.parent)
+	build_dir = duckdb.parent
+	postgres_ext = find_postgres_extension(build_dir)
+	ducklake_ext = find_extension(build_dir, "ducklake")
+	lakemon_ext = find_extension(build_dir, "lakemon")
 	postgres_load = probe_postgres_load(str(duckdb), postgres_ext)
+	ducklake_load = probe_named_load(str(duckdb), "ducklake", ducklake_ext, optional=True)
+	lakemon_load = probe_named_load(
+		str(duckdb), "lakemon", lakemon_ext, verify_sql="SELECT lakemon_version();"
+	)
 	print(f"duckdb={duckdb}")
 	print(f"postgres_ext={postgres_ext}")
+	print(f"ducklake_ext={ducklake_ext}")
+	print(f"lakemon_ext={lakemon_ext}")
 	print(f"postgres_load={postgres_load}")
+	print(f"ducklake_load={ducklake_load}")
+	print(f"lakemon_load={lakemon_load}")
 	print(f"data_path={data_path}")
-	session = LakeSession(str(duckdb), args.pg, data_path, postgres_load)
+	session = LakeSession(str(duckdb), args.pg, data_path, [postgres_load, ducklake_load, lakemon_load])
 	try:
 		seed(session)
 		execute_maintain(session, args.timeout)
