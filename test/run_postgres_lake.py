@@ -89,11 +89,12 @@ class LakeSession:
 		self.pg = pg
 		self.data_path = data_path
 		self.postgres_load = postgres_load
+		self.inlining_row_limit = 10
 
 	def preamble(self) -> str:
 		attach = (
 			f"ATTACH 'ducklake:postgres:{self.pg}' AS {CATALOG} "
-			f"(DATA_PATH '{self.data_path}', DATA_INLINING_ROW_LIMIT 10);"
+			f"(DATA_PATH '{self.data_path}', DATA_INLINING_ROW_LIMIT {self.inlining_row_limit});"
 		)
 		return f"{self.postgres_load}\n{attach}"
 
@@ -150,6 +151,16 @@ def count_files(session: LakeSession) -> int:
 	)
 
 
+def count_delete_files(session: LakeSession) -> int:
+	try:
+		return session.query_int(
+			f"SELECT count(*)::BIGINT AS n FROM ducklake_list_files('{CATALOG}', '{TABLE}', "
+			f"schema => '{SCHEMA}') WHERE delete_file IS NOT NULL AND delete_file <> '';"
+		)
+	except Failed:
+		return 0
+
+
 def count_rows(session: LakeSession) -> int:
 	return session.query_int(f"SELECT count(*)::BIGINT AS n FROM {CATALOG}.{SCHEMA}.{TABLE};")
 
@@ -199,23 +210,41 @@ def seed(session: LakeSession) -> None:
 		raise Failed(f"inlined seed must not write parquet files, got {files}")
 	print(f"seed inlined: inlined_rows={inlined} files={files} table_rows=3")
 
-	try:
-		session.run(f"CALL ducklake_set_option('{CATALOG}', 'data_inlining_row_limit', 0);")
-	except Failed:
-		session.run(f"CALL {CATALOG}.set_option('data_inlining_row_limit', 0);")
-	for i in range(8):
-		session.run(
-			f"INSERT INTO {CATALOG}.{SCHEMA}.{TABLE} VALUES ({100 + i}, 'file-{i}');"
-		)
-	session.run(
-		f"DELETE FROM {CATALOG}.{SCHEMA}.{TABLE} WHERE id >= 100 AND id < 104;"
+	# Later processes must not re-enable inlining via ATTACH. Two rows per
+	# file so a partial delete keeps the data file in ducklake_list_files
+	# (a fully-deleted one-row file disappears from the live listing).
+	session.inlining_row_limit = 0
+	inserts = "\n".join(
+		f"INSERT INTO {CATALOG}.{SCHEMA}.{TABLE} VALUES "
+		f"({100 + i}, 'file-{i}-a'), ({200 + i}, 'file-{i}-b');"
+		for i in range(8)
 	)
+	set_option = (
+		f"CALL ducklake_set_option('{CATALOG}', 'data_inlining_row_limit', 0);"
+	)
+	set_option_alt = f"CALL {CATALOG}.set_option('data_inlining_row_limit', 0);"
+	delete = f"DELETE FROM {CATALOG}.{SCHEMA}.{TABLE} WHERE id >= 100 AND id < 104;"
+	try:
+		session.run(f"{set_option}\n{inserts}")
+	except Failed:
+		session.run(f"{set_option_alt}\n{inserts}")
+	files_after_insert = count_files(session)
+	if files_after_insert < 8:
+		raise Failed(f"expected at least 8 small files after inserts, got {files_after_insert}")
+	session.run(delete)
 	files = count_files(session)
+	deletes = count_delete_files(session)
+	inlined_after = count_inlined_rows(session)
+	rows = count_rows(session)
 	if files < 8:
-		raise Failed(f"expected at least 8 small files after inserts, got {files}")
+		raise Failed(f"expected at least 8 live data files after partial deletes, got {files}")
+	if inlined_after <= 0:
+		raise Failed("inlined seed rows were lost while writing small files")
+	if rows >= 3 + 16:
+		raise Failed(f"delete did not remove rows, table_rows={rows}")
 	print(
-		f"seed files+deletes: files={files} inlined_rows={count_inlined_rows(session)} "
-		f"table_rows={count_rows(session)} snapshots={count_snapshots(session)}"
+		f"seed files+deletes: files={files} delete_files={deletes} "
+		f"inlined_rows={inlined_after} table_rows={rows} snapshots={count_snapshots(session)}"
 	)
 
 
@@ -226,8 +255,10 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 	print(
 		f"before maintain: files={files_before} inlined_rows={inlined_before} table_rows={rows_before}"
 	)
-	if inlined_before <= 0 and files_before < 8:
-		raise Failed("setup did not produce inlined data and many small files")
+	if inlined_before <= 0:
+		raise Failed(f"setup lost inlined data before maintain (inlined_rows={inlined_before})")
+	if files_before < 8:
+		raise Failed(f"setup did not keep many small files before maintain (files={files_before})")
 
 	rows = session.query_rows(
 		f"SELECT step, action, status FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false) "
