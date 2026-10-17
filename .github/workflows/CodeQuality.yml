@@ -1,10 +1,12 @@
 #
 # clang-format + clang-tidy on src/ (including src/include).
-# Advisory for now: findings make the check step yellow (continue-on-error)
-# and are written to the log, step summary, and annotations. The job stays
-# green. Flip FORMAT_CHECK_ADVISORY / TIDY_CHECK_ADVISORY to "false" to
-# fail the job after the whitespace PR (format) and after tidy findings
-# are cleaned by category.
+# Findings make the check step yellow (continue-on-error) and are written
+# to the log, step summary, and annotations. The gate step fails the job
+# when the matching ADVISORY flag is false.
+#
+# format-check is blocking. tidy-check is blocking while findings stay at 0.
+# Flip TIDY_CHECK_ADVISORY back to "true" if a later change reintroduces
+# findings that need a category-by-category cleanup.
 #
 # format-check: clang-format 11.0.1 (DuckDB scripts/format.py / CodeQuality.yml).
 # tidy-check: CMake configure only (CMAKE_EXPORT_COMPILE_COMMANDS / CLANG_TIDY=1,
@@ -26,9 +28,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Set to "false" to fail the job when the matching check reports findings.
-  FORMAT_CHECK_ADVISORY: "true"
-  TIDY_CHECK_ADVISORY: "true"
+  # Set to "true" to keep the matching check advisory (job green on findings).
+  FORMAT_CHECK_ADVISORY: "false"
+  TIDY_CHECK_ADVISORY: "false"
 
 jobs:
   format-check:
