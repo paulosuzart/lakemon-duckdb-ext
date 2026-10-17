@@ -37,6 +37,7 @@ static void AppendPlanned(std::vector<MaintainRow> &rows, const std::string &ste
                           const std::string &details, int64_t processed = 0) {
 	MaintainRow row = MakeRow(step, schema, table, action, "planned", processed, 0, details + " | " + sql);
 	row.sql = sql;
+	row.planned_call = PlannedCall::DuckLake;
 	rows.push_back(std::move(row));
 }
 
@@ -147,7 +148,7 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 			AppendDetails(row, interrupted ? "not run: interrupted" : "not run: previous step failed");
 			continue;
 		}
-		if (row.sql.find("ducklake_") != std::string::npos) {
+		if (row.planned_call == PlannedCall::DuckLake) {
 			if (!ducklake_checked) {
 				ducklake_present = DuckLakeFunctionRegistered(context);
 				ducklake_checked = true;

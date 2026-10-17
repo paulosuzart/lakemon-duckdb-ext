@@ -28,6 +28,9 @@ struct GlobalMaintainOptions {
 	bool delete_older_than_set = false;
 };
 
+// Planned SQL that ExecutePlannedRows must not run unless ducklake is loaded.
+enum class PlannedCall { None, DuckLake };
+
 struct MaintainRow {
 	std::string step;
 	std::string schema_name;
@@ -39,6 +42,7 @@ struct MaintainRow {
 	std::string details;
 	// DuckLake / catalog SQL for this step. Empty for skip / inventory-only rows.
 	std::string sql;
+	PlannedCall planned_call = PlannedCall::None;
 };
 
 std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const MaintainOptions &options);
