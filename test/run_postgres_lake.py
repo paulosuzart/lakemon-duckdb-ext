@@ -31,6 +31,9 @@ QUALIFIED = f"{SCHEMA}.{TABLE}"
 HEAVY_TABLE = "events"
 HEAVY_QUALIFIED = f"{SCHEMA}.{HEAVY_TABLE}"
 HEAVY_FILE_COUNT = 128
+FLUSH_TABLE = "ended_deletes"
+FLUSH_QUALIFIED = f"{SCHEMA}.{FLUSH_TABLE}"
+FLUSH_FILE_COUNT = 4
 # Generous per-step cap so a lock wait or planner hang fails CI without
 # flaking on a slow runner. Hundreds of small files should stay well under this.
 STEP_DURATION_LIMIT_MS = 120_000
@@ -585,6 +588,197 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 		raise Failed(f"merge did not reduce data files: {files_before} -> {files_after}")
 
 
+def set_inlining_limit(session: LakeSession, limit: int, timeout: int | None = None) -> None:
+	try:
+		session.run(
+			f"CALL ducklake_set_option('{CATALOG}', 'data_inlining_row_limit', {limit});",
+			timeout=timeout,
+		)
+	except Failed:
+		session.run(f"CALL {CATALOG}.set_option('data_inlining_row_limit', {limit});", timeout=timeout)
+
+
+def count_ended_data_files(session: LakeSession, table: str) -> int:
+	meta = f"__ducklake_metadata_{CATALOG}"
+	return session.query_int(
+		f"""
+		SELECT count(*)::BIGINT AS n
+		FROM {meta}.ducklake_data_file d
+		JOIN {meta}.ducklake_table t ON t.table_id = d.table_id
+		JOIN {meta}.ducklake_schema s ON s.schema_id = t.schema_id
+		WHERE t.table_name = '{table}' AND s.schema_name = '{SCHEMA}'
+		  AND t.end_snapshot IS NULL AND s.end_snapshot IS NULL
+		  AND d.end_snapshot IS NOT NULL;
+		"""
+	)
+
+
+def execute_flush_inlined_guard(session: LakeSession, timeout: int) -> None:
+	"""Inlined deletes on files that rewrite then ends must be counted and skippable."""
+	session.inlining_row_limit = 0
+	set_inlining_limit(session, 0, timeout)
+	inserts = "\n".join(
+		f"INSERT INTO {CATALOG}.{FLUSH_QUALIFIED} VALUES "
+		f"({300 + i}, 'ended-{i}-a'), ({400 + i}, 'ended-{i}-b');"
+		for i in range(FLUSH_FILE_COUNT)
+	)
+	session.run(
+		f"""
+		CREATE TABLE IF NOT EXISTS {CATALOG}.{FLUSH_QUALIFIED}(id INTEGER, payload VARCHAR);
+		{inserts}
+		""",
+		timeout=timeout,
+	)
+	files_before = session.query_int(
+		f"SELECT count(*)::BIGINT AS n FROM ducklake_list_files('{CATALOG}', '{FLUSH_TABLE}', "
+		f"schema => '{SCHEMA}');"
+	)
+	if files_before < FLUSH_FILE_COUNT:
+		raise Failed(f"flush-guard seed expected at least {FLUSH_FILE_COUNT} files, got {files_before}")
+	# One-row deletes stay under the inlining limit and land in ducklake_inlined_delete_*.
+	set_inlining_limit(session, 10, timeout)
+	session.run(
+		f"DELETE FROM {CATALOG}.{FLUSH_QUALIFIED} WHERE id >= 300 AND id < {300 + FLUSH_FILE_COUNT};",
+		timeout=timeout,
+	)
+	set_inlining_limit(session, 0, timeout)
+
+	stats_before = session.query_rows(
+		f"""
+		SELECT inlined_delete_rows, inlined_delete_files_active, inlined_delete_files_ended
+		FROM lakemon_table_stats('{CATALOG}', '{FLUSH_QUALIFIED}');
+		"""
+	)
+	if not stats_before:
+		raise Failed("lakemon_table_stats returned no row for the flush-guard table")
+	active_before = int(stats_before[0].get("inlined_delete_files_active") or 0)
+	ended_before = int(stats_before[0].get("inlined_delete_files_ended") or 0)
+	rows_before = int(stats_before[0].get("inlined_delete_rows") or 0)
+	print(
+		f"flush-guard after deletes: files={files_before} inlined_delete_rows={rows_before} "
+		f"active={active_before} ended={ended_before}"
+	)
+	if active_before < FLUSH_FILE_COUNT:
+		raise Failed(
+			f"expected inlined deletes on at least {FLUSH_FILE_COUNT} active files, "
+			f"got active={active_before} rows={rows_before} stats={stats_before}"
+		)
+
+	# Native rewrite ends the dirty files. DuckLake rewrite reads inlined deletions;
+	# it does not prune ducklake_inlined_delete_*.
+	try:
+		session.run(
+			f"CALL ducklake_rewrite_data_files('{CATALOG}', '{FLUSH_TABLE}', schema => '{SCHEMA}', "
+			f"delete_threshold => 0.01);",
+			timeout=timeout,
+		)
+	except Failed:
+		session.run(
+			f"CALL ducklake_rewrite_data_files('{CATALOG}', '{FLUSH_TABLE}', schema => '{SCHEMA}');",
+			timeout=timeout,
+		)
+	ended_files = count_ended_data_files(session, FLUSH_TABLE)
+	if ended_files < 1:
+		raise Failed(f"rewrite did not end any data files, ended={ended_files}")
+
+	stats_after = session.query_rows(
+		f"""
+		SELECT inlined_delete_rows, inlined_delete_files_active, inlined_delete_files_ended
+		FROM lakemon_table_stats('{CATALOG}', '{FLUSH_QUALIFIED}');
+		"""
+	)
+	if not stats_after:
+		raise Failed("lakemon_table_stats returned no row after rewrite")
+	ended_after = int(stats_after[0].get("inlined_delete_files_ended") or 0)
+	rows_after = int(stats_after[0].get("inlined_delete_rows") or 0)
+	print(f"flush-guard after rewrite: ended_data_files={ended_files} stats={stats_after}")
+	if ended_after < 1 or rows_after < 1:
+		raise Failed(
+			f"inlined deletes should remain on ended files after rewrite: {stats_after}"
+		)
+
+	table_rows = session.query_int(f"SELECT count(*)::BIGINT AS n FROM {CATALOG}.{FLUSH_QUALIFIED};")
+	# More small files so merge still has work after flush is skipped.
+	session.inlining_row_limit = 0
+	extra = "\n".join(
+		f"INSERT INTO {CATALOG}.{FLUSH_QUALIFIED} VALUES "
+		f"({500 + i}, 'merge-{i}-a'), ({600 + i}, 'merge-{i}-b');"
+		for i in range(4)
+	)
+	set_inlining_limit(session, 0, timeout)
+	session.run(extra, timeout=timeout)
+
+	planned = session.query_rows(
+		f"""
+		SET lakemon_flush_inlined_max_delete_files = 1;
+		SET lakemon_log_stderr = true;
+		SELECT step, action, status, files_processed, details
+		FROM lakemon_maintain('{CATALOG}', '{FLUSH_QUALIFIED}', dry_run => true)
+		WHERE step IN ('flush_inlined', 'rewrite', 'merge');
+		""",
+		timeout=timeout,
+	)
+	print("flush-guard dry_run:")
+	print(json.dumps(planned, indent=2))
+	flush_plan = [row for row in planned if row.get("step") == "flush_inlined"]
+	if len(flush_plan) != 1:
+		raise Failed(f"expected one flush_inlined plan row, got {flush_plan}")
+	if flush_plan[0].get("status") != "skip":
+		raise Failed(f"over-limit flush should be skip on dry_run: {flush_plan}")
+	details = str(flush_plan[0].get("details") or "")
+	if "planned_delete_files=" not in details:
+		raise Failed(f"flush details should include planned_delete_files: {details}")
+	if "ducklake_expire_snapshots" not in details:
+		raise Failed(f"skip details should recommend ducklake_expire_snapshots: {details}")
+	if "lakemon_flush_inlined_max_delete_files" not in details:
+		raise Failed(f"skip details should name the setting: {details}")
+	if int(flush_plan[0].get("files_processed") or 0) < 1:
+		raise Failed(f"files_processed should be the planned delete-file count: {flush_plan}")
+	if any(row.get("status") == "error" for row in planned):
+		raise Failed(f"dry_run should not error when flush is skipped: {planned}")
+	if not any(row.get("step") == "rewrite" for row in planned) or not any(
+		row.get("step") == "merge" for row in planned
+	):
+		raise Failed(f"rewrite/merge should still be planned after a flush skip: {planned}")
+
+	rows = session.query_rows(
+		f"""
+		SET lakemon_flush_inlined_max_delete_files = 1;
+		SET lakemon_log_stderr = true;
+		SELECT step, action, status, files_processed, details
+		FROM lakemon_maintain('{CATALOG}', '{FLUSH_QUALIFIED}', dry_run => false);
+		""",
+		timeout=timeout,
+	)
+	print("flush-guard execute:")
+	print(json.dumps(rows, indent=2))
+	print("flush-guard stderr:")
+	print(session.last_stderr)
+	flush_exec = [row for row in rows if row.get("step") == "flush_inlined"]
+	if not flush_exec or flush_exec[0].get("status") != "skip":
+		raise Failed(f"over-limit flush should skip on execute: {flush_exec}")
+	if any(row.get("status") == "error" for row in rows):
+		raise Failed(f"skipped flush must not fail-fast: {rows}")
+	if any("not run: previous step failed" in str(row.get("details") or "") for row in rows):
+		raise Failed(f"rewrite/merge must still run after a flush skip: {rows}")
+	if not any(row.get("step") == "merge" for row in rows):
+		raise Failed(f"merge rows missing after flush skip: {rows}")
+	starts = [line for line in stderr_step_lines(session.last_stderr) if line.startswith("lakemon start")]
+	flush_starts = [line for line in starts if "step=flush_inlined" in line]
+	if not flush_starts or "files_processed=" not in flush_starts[0]:
+		raise Failed(f"stderr start log should include planned delete-file count: {session.last_stderr}")
+	table_rows_after = session.query_int(f"SELECT count(*)::BIGINT AS n FROM {CATALOG}.{FLUSH_QUALIFIED};")
+	if table_rows_after != table_rows + 8:
+		raise Failed(
+			f"row count changed during skipped-flush maintain: {table_rows} + 8 inserts "
+			f"-> {table_rows_after}"
+		)
+	print(
+		f"flush-guard ok: ended_inlined_files={ended_after} skipped_flush "
+		f"files_processed={flush_exec[0].get('files_processed')}"
+	)
+
+
 def execute_expire(session: LakeSession, timeout: int) -> None:
 	snapshots_before = count_snapshots(session)
 	if snapshots_before < 2:
@@ -977,6 +1171,7 @@ def main() -> int:
 		seed(session)
 		assert_execute_guards(session, args.timeout)
 		execute_maintain(session, args.timeout)
+		execute_flush_inlined_guard(session, args.timeout)
 		execute_expire(session, args.timeout)
 		heavy_timeout = max(args.timeout, 180)
 		seed_heavy(session, HEAVY_TABLE, HEAVY_FILE_COUNT, heavy_timeout)

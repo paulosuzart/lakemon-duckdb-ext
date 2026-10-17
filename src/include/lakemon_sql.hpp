@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <sstream>
 #include <string>
 
@@ -75,6 +76,10 @@ inline std::string SchemaNamed(const TableRef &ref, const char *param = "schema"
 		return "";
 	}
 	return std::string(", ") + param + " => " + QuoteString(ref.schema);
+}
+
+inline std::string InlinedDeleteTableName(int64_t table_id) {
+	return "ducklake_inlined_delete_" + std::to_string(table_id);
 }
 
 inline std::string FlushInlinedDataCall(const std::string &catalog, const TableRef &ref) {

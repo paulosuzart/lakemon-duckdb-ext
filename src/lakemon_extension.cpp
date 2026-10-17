@@ -4,6 +4,7 @@
 #include "lakemon_catalog.hpp"
 #include "lakemon_compat.hpp"
 #include "lakemon_maintain.hpp"
+#include "lakemon_observe.hpp"
 #include "lakemon_policy.hpp"
 #include "lakemon_store.hpp"
 
@@ -440,11 +441,15 @@ static unique_ptr<FunctionData> StatsBind(ClientContext &, TableFunctionBindInpu
 	         "rewrite_threshold",
 	         "merge_tier_hint",
 	         "target_file_size",
-	         "auto_compact"};
+	         "auto_compact",
+	         "inlined_delete_rows",
+	         "inlined_delete_files_active",
+	         "inlined_delete_files_ended"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT,
 	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT, LogicalType::BIGINT,
 	                LogicalType::DOUBLE,  LogicalType::VARCHAR, LogicalType::DOUBLE, LogicalType::VARCHAR,
-	                LogicalType::VARCHAR, LogicalType::BOOLEAN};
+	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::BIGINT,  LogicalType::BIGINT,
+	                LogicalType::BIGINT};
 	return std::move(data);
 }
 
@@ -471,7 +476,10 @@ static unique_ptr<GlobalTableFunctionState> StatsInit(ClientContext &context, Ta
 		                       Value::BIGINT(static_cast<int64_t>(hint.delete_count)),
 		                       Value::BIGINT(static_cast<int64_t>(hint.deleted_bytes_weighted)), Value(hint.delete_ratio),
 		                       Value(hint.rewrite_plan), Value(hint.rewrite_threshold), Value(hint.merge_tier_hint),
-		                       Value(hint.target_file_size), Value::BOOLEAN(hint.auto_compact)});
+		                       Value(hint.target_file_size), Value::BOOLEAN(hint.auto_compact),
+		                       Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_rows)),
+		                       Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_files_active)),
+		                       Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_files_ended))});
 	}
 	return std::move(state);
 }
@@ -487,7 +495,7 @@ static void SetPolicyReturnTypes(vector<LogicalType> &return_types, lakemon::Col
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 }
 
-static void EmitPolicy(RowState &state, const lakemon::policy::ActivePolicy &policy) {
+static void EmitPolicy(RowState &state, const lakemon::policy::ActivePolicy &policy, int64_t flush_max_delete_files) {
 	const char *source =
 	    lakemon::policy::PolicyKeyOverridden(policy, lakemon::policy::kKindRewriteLadder, lakemon::policy::kLadderName)
 	        ? lakemon::policy::kSourceOverride
@@ -504,6 +512,9 @@ static void EmitPolicy(RowState &state, const lakemon::policy::ActivePolicy &pol
 		                      Value(tier.target_file_size),
 		                      Value("max_compacted_files=" + std::to_string(tier.max_compacted_files)), Value(source)});
 	}
+	state.rows.push_back({Value(lakemon::policy::kKindSetting), Value(lakemon::policy::kFlushInlinedMaxDeleteFilesName),
+	                      Value("0"), Value(""), Value(std::to_string(flush_max_delete_files)),
+	                      Value(lakemon::policy::FormatFlushInlinedSettingNotes()), Value("")});
 }
 
 static unique_ptr<FunctionData> PolicyBind(ClientContext &, TableFunctionBindInput &input,
@@ -519,14 +530,16 @@ static unique_ptr<FunctionData> PolicyBind(ClientContext &, TableFunctionBindInp
 static unique_ptr<GlobalTableFunctionState> PolicyInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<PolicyBindData>();
 	auto state = make_uniq<RowState>();
+	const int64_t flush_max = lakemon::GetInt64Setting(context, lakemon::kFlushInlinedMaxDeleteFilesSetting,
+	                                                   lakemon::kDefaultFlushInlinedMaxDeleteFiles);
 	if (bind.catalog.empty()) {
-		EmitPolicy(*state, lakemon::policy::DefaultPolicy());
+		EmitPolicy(*state, lakemon::policy::DefaultPolicy(), flush_max);
 		return std::move(state);
 	}
 	try {
 		std::string error;
 		const auto policy = lakemon::LoadActivePolicy(context, bind.catalog, &error);
-		EmitPolicy(*state, policy);
+		EmitPolicy(*state, policy, flush_max);
 		if (!error.empty()) {
 			state->rows.push_back({Value("error"), Value(""), Value(""), Value(""), Value(""), Value(error),
 			                       Value("error")});

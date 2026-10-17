@@ -9,6 +9,7 @@
 namespace lakemon {
 
 static constexpr const char *kLogStderrSetting = "lakemon_log_stderr";
+static constexpr const char *kFlushInlinedMaxDeleteFilesSetting = "lakemon_flush_inlined_max_delete_files";
 
 static constexpr const char *kCatalogLockHint =
     "lakemon: DuckLake catalog commit could not obtain a Postgres lock "

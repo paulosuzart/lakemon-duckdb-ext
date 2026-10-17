@@ -26,12 +26,18 @@ INSERT INTO lake.bronze_financial.subscription VALUES (1, 'a'), (2, 'b');
 statement ok
 INSERT INTO lake.bronze_financial.subscription VALUES (3, 'c'), (4, 'd');
 
-# Plan-only still returns planned SQL without running DuckLake mutations.
+# Inlined inserts and no parquet files yet: still plan flush for this live table.
 query I
 SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true)
 WHERE step = 'flush_inlined';
 ----
 planned
+
+query I
+SELECT count(*) FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true)
+WHERE step = 'flush_inlined' AND details LIKE '%planned_delete_files=%';
+----
+1
 
 # Deadlock regression: CALL / SELECT with dry_run => false must execute from
 # bind_replace (not table-function init). One SELECT adds snapshots; a double
@@ -45,6 +51,13 @@ SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry
 WHERE step = 'flush_inlined';
 ----
 ok
+
+# No inlined-delete table until a parquet-file delete is inlined. Counts stay 0.
+query III
+SELECT inlined_delete_rows, inlined_delete_files_active, inlined_delete_files_ended
+FROM lakemon_table_stats('lake', 'bronze_financial.subscription');
+----
+0	0	0
 
 query I
 SELECT (SELECT count(*) FROM ducklake_snapshots('lake')) > (SELECT snaps FROM lakemon_once_before);
@@ -114,11 +127,13 @@ SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run 
 ----
 CREATE
 
-# Same bind path as C API / Python / JDBC prepare with a parameter.
+# Bare ? is refused before execute. Sqllogictest supplies no values, so DuckDB
+# errors at bind ("parameter" on 1.5 and 2.x). C API / driver prepare is
+# covered by the Postgres lake script (message contains "prepared").
 statement error
 SELECT * FROM lakemon_maintain(?, dry_run => false);
 ----
-prepared
+parameter
 
 statement ok
 BEGIN;

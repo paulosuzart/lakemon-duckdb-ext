@@ -18,7 +18,9 @@ constexpr uint64_t kMiB = 1024ULL * 1024ULL;
 
 static constexpr const char *kKindRewriteLadder = "rewrite_ladder";
 static constexpr const char *kKindMergeTier = "merge_tier";
+static constexpr const char *kKindSetting = "setting";
 static constexpr const char *kLadderName = "default";
+static constexpr const char *kFlushInlinedMaxDeleteFilesName = "flush_inlined_max_delete_files";
 static constexpr const char *kSourceDefault = "default";
 static constexpr const char *kSourceOverride = "override";
 
@@ -850,7 +852,39 @@ struct TableHint {
 	std::string merge_tier_hint = "none";
 	std::string target_file_size;
 	bool auto_compact = true;
+	// Distinct inlined-delete file_ids that still exist in ducklake_data_file.
+	// Ended files (end_snapshot IS NOT NULL) still get a delete file on flush.
+	uint64_t inlined_delete_rows = 0;
+	uint64_t inlined_delete_files_active = 0;
+	uint64_t inlined_delete_files_ended = 0;
+	// Non-empty when the inlined-delete table exists but could not be read
+	// (permission, timeout, …). Missing table is not an error (counts stay 0).
+	std::string inlined_delete_error;
 };
+
+inline uint64_t PlannedFlushDeleteFiles(const TableHint &hint) {
+	return SaturatingAdd(hint.inlined_delete_files_active, hint.inlined_delete_files_ended);
+}
+
+inline std::string FormatFlushInlinedDetails(const TableHint &hint) {
+	std::ostringstream out;
+	out << "planned_delete_files=" << PlannedFlushDeleteFiles(hint)
+	    << " inlined_delete_rows=" << hint.inlined_delete_rows
+	    << " inlined_delete_files_active=" << hint.inlined_delete_files_active
+	    << " inlined_delete_files_ended=" << hint.inlined_delete_files_ended;
+	return out.str();
+}
+
+inline std::string FormatFlushInlinedSettingNotes() {
+	return "0 = no limit; skip flush_inlined when planned delete files exceed this; negatives rejected";
+}
+
+inline std::string FormatFlushInlinedMeasureError(const TableHint &hint) {
+	if (hint.inlined_delete_error.empty()) {
+		return std::string();
+	}
+	return FormatFlushInlinedDetails(hint) + " | unread inlined-delete metadata: " + hint.inlined_delete_error;
+}
 
 inline void RefreshRewritePlan(TableHint &hint) {
 	hint.rewrite_plan = FormatRewritePlan(hint.rewrite_steps);
@@ -910,6 +944,36 @@ inline void ApplyNativeOptions(TableHint &hint, const std::vector<OptionBinding>
 	const ResolvedOption target = ResolveOption(options, "target_file_size", hint.schema_name, hint.table_name);
 	if (target.found) {
 		hint.target_file_size = target.value;
+	}
+}
+
+// File inventory only sees parquet. Live tables that still have only inlined
+// inserts must still get a hint so flush_inlined is planned.
+inline bool SameTableHint(const TableHint &left, const TableHint &right) {
+	return left.schema_name == right.schema_name && left.table_name == right.table_name;
+}
+
+inline void AddMissingLiveTableHints(std::vector<TableHint> &hints, const std::vector<TableHint> &live_tables,
+                                     const std::vector<OptionBinding> &options) {
+	for (const auto &live : live_tables) {
+		if (live.schema_name.empty() && live.table_name.empty()) {
+			continue;
+		}
+		bool found = false;
+		for (const auto &hint : hints) {
+			if (SameTableHint(hint, live)) {
+				found = true;
+				break;
+			}
+		}
+		if (found) {
+			continue;
+		}
+		TableHint hint;
+		hint.schema_name = live.schema_name;
+		hint.table_name = live.table_name;
+		ApplyNativeOptions(hint, options);
+		hints.push_back(std::move(hint));
 	}
 }
 

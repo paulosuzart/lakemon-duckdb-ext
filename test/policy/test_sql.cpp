@@ -9,6 +9,11 @@ static bool Contains(const std::string &haystack, const std::string &needle) {
 	return haystack.find(needle) != std::string::npos;
 }
 
+static void TestInlinedDeleteTableNameIsDeterministic() {
+	Expect(lakemon::InlinedDeleteTableName(0) == "ducklake_inlined_delete_0", "table id 0");
+	Expect(lakemon::InlinedDeleteTableName(17) == "ducklake_inlined_delete_17", "table id 17");
+}
+
 static void TestFlushSchemaQualifiedUsesNamedArgs() {
 	const auto ref = lakemon::ParseTableRef("dp_gold.deal_chat_bridge");
 	const std::string sql = lakemon::FlushInlinedDataCall("dlw", ref);
@@ -153,6 +158,7 @@ static void TestRewriteCallNeverUsesZeroThreshold() {
 }
 
 int main() {
+	TestInlinedDeleteTableNameIsDeterministic();
 	TestFlushSchemaQualifiedUsesNamedArgs();
 	TestFlushCatalogOnlyOmitsTable();
 	TestFlushMainAndEmptySchemaOmitSchemaName();

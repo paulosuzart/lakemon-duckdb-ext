@@ -465,6 +465,10 @@ static void TestPipelineStepsAreIndependent() {
 	Expect(lakemon::InventoryFailureStopsPipeline(), "hard inventory failure stops rewrite/merge");
 	Expect(!lakemon::FlushErrorSkipsStep("rewrite"), "flush error does not skip rewrite");
 	Expect(!lakemon::FlushErrorSkipsStep("merge"), "flush error does not skip merge");
+	Expect(!lakemon::StepErrorStopsBatch("flush_inlined"),
+	       "flush_inlined execute error does not fail-fast the rest of the batch");
+	Expect(lakemon::StepErrorStopsBatch("rewrite"), "rewrite execute error still fail-fasts");
+	Expect(lakemon::StepErrorStopsBatch("merge"), "merge execute error still fail-fasts");
 	Expect(!lakemon::TableMaintainIncludesRetention(),
 	       "lakemon_maintain must not expire snapshots or clean old/orphan files");
 	Expect(!lakemon::GlobalMaintainIncludesTableWork(),
@@ -501,6 +505,86 @@ static void TestCumulativeCrossesCutIsOverflowSafe() {
 	Expect(!CumulativeCrossesCut(half / 2, half, 3, 4), "quarter of bytes does not cross 3/4");
 	Expect(CumulativeCrossesCut(~0ULL, ~0ULL, 1, 1), "max uint64 full product still compares");
 	Expect(!CumulativeCrossesCut(1, ~0ULL, 1, 2), "tiny cumulative vs huge total stays below 1/2");
+}
+
+static void TestFlushInlinedGuardAndDetails() {
+	Expect(!lakemon::FlushInlinedExceedsLimit(0, 500), "empty backlog does not skip");
+	Expect(!lakemon::FlushInlinedExceedsLimit(500, 500), "equal to the limit still flushes");
+	Expect(lakemon::FlushInlinedExceedsLimit(501, 500), "one over the default limit skips");
+	Expect(!lakemon::FlushInlinedExceedsLimit(10000, 0), "0 is no limit");
+	Expect(!lakemon::FlushInlinedExceedsLimit(2, -1), "negative is no limit");
+	Expect(lakemon::FlushInlinedExceedsLimit(2, 1), "low threshold skips");
+	Expect(!lakemon::FlushInlinedExceedsLimit(1, 1), "planned == limit still flushes");
+
+	TableHint hint;
+	hint.inlined_delete_rows = 12;
+	hint.inlined_delete_files_active = 3;
+	hint.inlined_delete_files_ended = 9;
+	Expect(PlannedFlushDeleteFiles(hint) == 12, "planned delete files are active + ended");
+	const std::string details = FormatFlushInlinedDetails(hint);
+	Expect(details.find("planned_delete_files=12") != std::string::npos, "details include planned count");
+	Expect(details.find("inlined_delete_rows=12") != std::string::npos, "details include row count");
+	Expect(details.find("inlined_delete_files_active=3") != std::string::npos, "details include active files");
+	Expect(details.find("inlined_delete_files_ended=9") != std::string::npos, "details include ended files");
+
+	const std::string skip = lakemon::FlushInlinedSkipReason(12, 5);
+	Expect(skip.find("planned_delete_files=12") != std::string::npos, "skip names the planned count");
+	Expect(skip.find("lakemon_flush_inlined_max_delete_files=5") != std::string::npos, "skip names the setting");
+	Expect(skip.find("ducklake_expire_snapshots") != std::string::npos, "skip recommends expire");
+
+	Expect(FormatFlushInlinedSettingNotes().find("0 = no limit") != std::string::npos, "policy notes mention 0");
+	Expect(std::string(kKindSetting) == "setting", "policy kind for the setting row");
+	Expect(std::string(kFlushInlinedMaxDeleteFilesName) == "flush_inlined_max_delete_files",
+	       "policy name matches the setting suffix");
+
+	std::string setting_error;
+	Expect(lakemon::ValidFlushInlinedMaxDeleteFiles(0, setting_error), "0 is valid (no limit)");
+	Expect(lakemon::ValidFlushInlinedMaxDeleteFiles(500, setting_error), "default is valid");
+	Expect(!lakemon::ValidFlushInlinedMaxDeleteFiles(-1, setting_error), "negatives are rejected");
+	Expect(setting_error.find("must be >= 0") != std::string::npos, "negative error names the bound");
+
+	Expect(lakemon::LooksLikeMissingInlinedDeleteTable(
+	           "Catalog Error: Table with name ducklake_inlined_delete_3 does not exist!",
+	           "ducklake_inlined_delete_3"),
+	       "missing inlined-delete table is recognized");
+	Expect(lakemon::LooksLikeMissingInlinedDeleteTable("relation \"ducklake_inlined_delete_3\" does not exist",
+	                                                  "ducklake_inlined_delete_3"),
+	       "Postgres missing-relation wording is recognized");
+	Expect(!lakemon::LooksLikeMissingInlinedDeleteTable(
+	           "ERROR: permission denied for table ducklake_inlined_delete_3", "ducklake_inlined_delete_3"),
+	       "permission errors are not missing-table");
+	Expect(!lakemon::LooksLikeMissingInlinedDeleteTable("ERROR: lock timeout", "ducklake_inlined_delete_3"),
+	       "timeout without the table name is not missing-table");
+	TableHint unread;
+	unread.inlined_delete_error = "permission denied";
+	const std::string measure = FormatFlushInlinedMeasureError(unread);
+	Expect(measure.find("unread inlined-delete metadata") != std::string::npos, "measure error is explicit");
+	Expect(measure.find("permission denied") != std::string::npos, "measure error keeps the cause");
+}
+
+static void TestInlinedOnlyTablesGetHints() {
+	std::vector<TableHint> hints;
+	TableHint live;
+	live.schema_name = "bronze_financial";
+	live.table_name = "subscription";
+	AddMissingLiveTableHints(hints, {live}, {});
+	Expect(hints.size() == 1, "inlined-only live table is inventoried for flush");
+	Expect(hints[0].schema_name == "bronze_financial", "live table schema");
+	Expect(hints[0].table_name == "subscription", "live table name");
+	Expect(hints[0].file_count == 0, "no parquet files yet");
+	Expect(hints[0].auto_compact, "default auto_compact on an inlined-only table");
+	AddMissingLiveTableHints(hints, {live}, {});
+	Expect(hints.size() == 1, "already inventoried table is not duplicated");
+
+	TableHint existing;
+	existing.schema_name = "main";
+	existing.table_name = "events";
+	existing.file_count = 2;
+	std::vector<TableHint> with_files = {existing};
+	TableHint also_live = existing;
+	AddMissingLiveTableHints(with_files, {also_live}, {});
+	Expect(with_files.size() == 1, "file-backed table is not replaced");
+	Expect(with_files[0].file_count == 2, "existing file stats are kept");
 }
 
 static void TestFormatInventoryDiagnosticsJoinsAll() {
@@ -550,6 +634,8 @@ int main() {
 	TestPipelineStepsAreIndependent();
 	TestGlobalExpireCleanupSkipSemantics();
 	TestCumulativeCrossesCutIsOverflowSafe();
+	TestFlushInlinedGuardAndDetails();
+	TestInlinedOnlyTablesGetHints();
 	TestFormatInventoryDiagnosticsJoinsAll();
 	if (TestFailures()) {
 		std::cerr << TestFailures() << " failure(s)" << std::endl;

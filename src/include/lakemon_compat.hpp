@@ -9,6 +9,7 @@
 #include "duckdb/main/database.hpp"
 
 #include <new>
+#include <string>
 
 // Detect DuckDB 2.x by result_format.hpp, which exists only on 2.x.
 // identifier.hpp is not a 2.x signal: it was backported to 1.5.6.
@@ -38,6 +39,8 @@
 #endif
 
 #include "duckdb/main/config.hpp"
+#include "duckdb/common/enums/set_scope.hpp"
+#include "lakemon_pipeline.hpp"
 
 #if defined(__has_include)
 #if __has_include("duckdb/logging/logger.hpp")
@@ -307,6 +310,24 @@ inline bool GetBooleanSetting(duckdb::ClientContext &context, const char *name, 
 	}
 }
 
+inline int64_t GetInt64Setting(duckdb::ClientContext &context, const char *name, int64_t fallback) {
+	duckdb::Value value;
+	if (!TryGetSettingValue(context, name, value) || value.IsNull()) {
+		return fallback;
+	}
+	try {
+		return value.GetValue<int64_t>();
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		return fallback;
+	} catch (const std::exception &) {
+		return fallback;
+	}
+}
+
 inline void RegisterLakemonLogType(duckdb::DatabaseInstance &db) {
 #if LAKEMON_HAS_DUCKDB_LOG
 	try {
@@ -323,12 +344,39 @@ inline void RegisterLakemonLogType(duckdb::DatabaseInstance &db) {
 #endif
 }
 
+inline void FlushInlinedMaxDeleteFilesOnSet(duckdb::ClientContext &, duckdb::SetScope, duckdb::Value &parameter) {
+	if (parameter.IsNull()) {
+		throw duckdb::InvalidInputException("lakemon: lakemon_flush_inlined_max_delete_files cannot be NULL");
+	}
+	int64_t value = 0;
+	try {
+		value = parameter.GetValue<int64_t>();
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		throw duckdb::InvalidInputException(
+		    "lakemon: lakemon_flush_inlined_max_delete_files must be a BIGINT >= 0 (0 = no limit)");
+	}
+	std::string error;
+	if (!ValidFlushInlinedMaxDeleteFiles(value, error)) {
+		throw duckdb::InvalidInputException("%s", error.c_str());
+	}
+}
+
 inline void RegisterLakemonSettings(duckdb::DatabaseInstance &db) {
 	auto &config = duckdb::DBConfig::GetConfig(db);
 	try {
 		config.AddExtensionOption("lakemon_log_stderr",
 		                          "Write lakemon maintain step start/end lines to stderr",
 		                          duckdb::LogicalType::BOOLEAN, duckdb::Value::BOOLEAN(false));
+		config.AddExtensionOption("lakemon_flush_inlined_max_delete_files",
+		                          "Skip ducklake_flush_inlined_data when the planned delete-file count "
+		                          "exceeds this (0 = no limit). Negatives are rejected.",
+		                          duckdb::LogicalType::BIGINT,
+		                          duckdb::Value::BIGINT(kDefaultFlushInlinedMaxDeleteFiles),
+		                          FlushInlinedMaxDeleteFilesOnSet);
 	} catch (const duckdb::InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {

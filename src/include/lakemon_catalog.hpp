@@ -28,4 +28,11 @@ std::vector<policy::TableHint> InventoryTables(duckdb::ClientContext &context, c
 std::vector<policy::OptionBinding> LoadCatalogOptions(duckdb::ClientContext &context, const std::string &catalog,
                                                       std::string *error_out);
 
+// Live DuckLake tables plus inlined-delete backlog (distinct file_ids still in
+// ducklake_data_file, split active vs ended). Missing inlined-delete tables
+// stay at zero. InventoryTables also uses this list so tables that only have
+// inlined inserts (no parquet files yet) still get a flush_inlined row.
+std::vector<policy::TableHint> LoadInlinedDeleteBacklog(duckdb::ClientContext &context, const std::string &catalog,
+                                                        const TableRef &filter);
+
 } // namespace lakemon
