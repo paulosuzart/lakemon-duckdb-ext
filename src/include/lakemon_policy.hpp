@@ -125,8 +125,8 @@ inline double DeleteRatio(const FileStat &file) {
 	}
 	// record_count unknown (ducklake_list_files fallback): conservative size ratio.
 	if (file.file_size_bytes > 0 && file.delete_file_size_bytes > 0) {
-		return std::min(1.0, static_cast<double>(file.delete_file_size_bytes) /
-		                         static_cast<double>(file.file_size_bytes));
+		return std::min(1.0,
+		                static_cast<double>(file.delete_file_size_bytes) / static_cast<double>(file.file_size_bytes));
 	}
 	if (file.delete_file_size_bytes > 0 || file.delete_count > 0) {
 		return 1.0;
@@ -490,11 +490,9 @@ inline bool OverlayStoredRow(ActivePolicy &policy, const StoredPolicyRow &row, s
 		}
 		RewriteLadder next;
 		next.byte_budget = row.byte_budget;
-		next.max_rewrite_steps =
-		    row.max_rewrite_steps == 0 ? kDefaultMaxRewriteSteps : row.max_rewrite_steps;
-		next.min_delete_ratio = (row.min_delete_ratio > 0.0 && row.min_delete_ratio <= 1.0)
-		                            ? row.min_delete_ratio
-		                            : kDefaultMinDeleteRatio;
+		next.max_rewrite_steps = row.max_rewrite_steps == 0 ? kDefaultMaxRewriteSteps : row.max_rewrite_steps;
+		next.min_delete_ratio =
+		    (row.min_delete_ratio > 0.0 && row.min_delete_ratio <= 1.0) ? row.min_delete_ratio : kDefaultMinDeleteRatio;
 		if (!ValidateRewriteLadder(next, error)) {
 			return false;
 		}
@@ -689,8 +687,7 @@ inline std::vector<double> ByteWeightedCuts(const std::vector<FileStat> &dirty, 
 // crosses total_bytes * i/N. Last cut is the smallest observed fraction in
 // that pool (never 0.0, never below min_delete_ratio). Invalid ladders fail
 // closed (no rungs). Duplicate thresholds merge slices instead of dropping.
-inline std::vector<PlannedRewriteStep> PlanRewriteRungs(const std::vector<FileStat> &files,
-                                                        const RewriteLadder &ladder,
+inline std::vector<PlannedRewriteStep> PlanRewriteRungs(const std::vector<FileStat> &files, const RewriteLadder &ladder,
                                                         std::string *error_out = nullptr) {
 	std::string error;
 	if (!ValidateRewriteLadder(ladder, error)) {
@@ -719,8 +716,7 @@ inline std::vector<PlannedRewriteStep> PlanRewriteRungs(const std::vector<FileSt
 	}
 	std::sort(dirty.begin(), dirty.end(), SortDirtyWorstFirst);
 
-	const std::vector<double> cuts =
-	    ByteWeightedCuts(dirty, total_bytes, ladder.max_rewrite_steps, floor_threshold);
+	const std::vector<double> cuts = ByteWeightedCuts(dirty, total_bytes, ladder.max_rewrite_steps, floor_threshold);
 	std::vector<PlannedRewriteStep> rungs;
 	std::size_t file_idx = 0;
 	for (std::size_t i = 0; i < cuts.size(); i++) {
@@ -1003,7 +999,8 @@ inline TableHint SummarizeTable(const std::vector<FileStat> &files, const Active
 			}
 		}
 	}
-	hint.delete_ratio = records == 0 ? 0.0 : std::min(1.0, static_cast<double>(hint.delete_count) / static_cast<double>(records));
+	hint.delete_ratio =
+	    records == 0 ? 0.0 : std::min(1.0, static_cast<double>(hint.delete_count) / static_cast<double>(records));
 	hint.rewrite_steps = PlanRewriteRungs(files, policy.rewrite);
 	RefreshRewritePlan(hint);
 	for (std::vector<MergeTier>::size_type i = 0; i < policy.tiers.size(); i++) {

@@ -247,8 +247,7 @@ std::vector<policy::OptionBinding> LoadCatalogOptions(duckdb::ClientContext &con
 	std::string error;
 	const std::string ident = QuoteIdent(catalog);
 	const std::string quoted = QuoteString(catalog);
-	const std::string select =
-	    "SELECT option_name, value, scope, scope_entry FROM ";
+	const std::string select = "SELECT option_name, value, scope, scope_entry FROM ";
 	if (TryLoadOptionsQuery(context, select + "ducklake_options(" + quoted + ")", rows, error) ||
 	    TryLoadOptionsQuery(context, select + ident + ".options()", rows, error) ||
 	    TryLoadOptionsQuery(context, select + ident + ".main.options()", rows, error)) {
@@ -273,8 +272,8 @@ static bool MatchesTableFilter(const std::string &schema_name, const std::string
 	return filter.schema.empty() || schema_name == filter.schema;
 }
 
-static void MeasureInlinedDeleteTable(duckdb::ClientContext &context, const std::string &meta,
-                                      int64_t table_id, policy::TableHint &hint) {
+static void MeasureInlinedDeleteTable(duckdb::ClientContext &context, const std::string &meta, int64_t table_id,
+                                      policy::TableHint &hint) {
 	const std::string table_name = InlinedDeleteTableName(table_id);
 	const std::string delete_table = QuoteIdent(table_name);
 	std::ostringstream sql;

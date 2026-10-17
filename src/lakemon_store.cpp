@@ -21,18 +21,11 @@ struct PolicyColumn {
 	const char *ddl_type;
 };
 
-static const PolicyColumn kPolicyValueCols[] = {{"kind", "VARCHAR NOT NULL"},
-                                                {"name", "VARCHAR NOT NULL"},
-                                                {"min_file_size", "BIGINT"},
-                                                {"max_file_size", "BIGINT"},
-                                                {"target_file_size", "VARCHAR"},
-                                                {"max_compacted_files", "BIGINT"},
-                                                {"high_min", "BIGINT"},
-                                                {"medium_min", "BIGINT"},
-                                                {"low_min", "BIGINT"},
-                                                {"byte_budget", "BIGINT"},
-                                                {"max_rewrite_steps", "BIGINT"},
-                                                {"min_delete_ratio", "DOUBLE"}};
+static const PolicyColumn kPolicyValueCols[] = {
+    {"kind", "VARCHAR NOT NULL"}, {"name", "VARCHAR NOT NULL"},    {"min_file_size", "BIGINT"},
+    {"max_file_size", "BIGINT"},  {"target_file_size", "VARCHAR"}, {"max_compacted_files", "BIGINT"},
+    {"high_min", "BIGINT"},       {"medium_min", "BIGINT"},        {"low_min", "BIGINT"},
+    {"byte_budget", "BIGINT"},    {"max_rewrite_steps", "BIGINT"}, {"min_delete_ratio", "DOUBLE"}};
 
 static const size_t kPolicyValueColCount = sizeof(kPolicyValueCols) / sizeof(kPolicyValueCols[0]);
 
@@ -170,8 +163,8 @@ static policy::StoredPolicyRow RowFromResult(QueryHandle &result, duckdb::idx_t 
 	return row;
 }
 
-std::vector<policy::StoredPolicyRow> LoadStoredPolicyRows(duckdb::ClientContext &context,
-                                                          const std::string &catalog, std::string *error_out) {
+std::vector<policy::StoredPolicyRow> LoadStoredPolicyRows(duckdb::ClientContext &context, const std::string &catalog,
+                                                          std::string *error_out) {
 	std::vector<policy::StoredPolicyRow> rows;
 	if (catalog.empty()) {
 		if (error_out) {
@@ -182,8 +175,7 @@ std::vector<policy::StoredPolicyRow> LoadStoredPolicyRows(duckdb::ClientContext 
 	try {
 		TryMigratePolicyStore(context);
 		std::ostringstream sql;
-		sql << "SELECT " << PolicySelectList() << " FROM __lakemon.policy WHERE catalog = "
-		    << QuoteString(catalog);
+		sql << "SELECT " << PolicySelectList() << " FROM __lakemon.policy WHERE catalog = " << QuoteString(catalog);
 		auto result = RunSQL(context, sql.str());
 		if (!result) {
 			return rows;
@@ -263,8 +255,8 @@ void DeleteStoredPolicyRow(duckdb::ClientContext &context, const std::string &ca
 	}
 	EnsurePolicyStore(context);
 	std::ostringstream sql;
-	sql << "DELETE FROM __lakemon.policy WHERE catalog = " << QuoteString(catalog) << " AND kind = "
-	    << QuoteString(kind) << " AND name = " << QuoteString(name);
+	sql << "DELETE FROM __lakemon.policy WHERE catalog = " << QuoteString(catalog)
+	    << " AND kind = " << QuoteString(kind) << " AND name = " << QuoteString(name);
 	RunSQL(context, sql.str());
 }
 

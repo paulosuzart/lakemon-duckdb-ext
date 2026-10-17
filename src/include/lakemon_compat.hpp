@@ -226,9 +226,8 @@ inline void FinishChunk(duckdb::DataChunk &output, duckdb::idx_t count) {
 // 1.5: named_parameters map. 2.x: typed **kwargs on the signature.
 // Works for TableFunction and PragmaFunction.
 template <typename FunctionT>
-inline void AddNamedParameters(
-    FunctionT &function,
-    std::initializer_list<std::pair<const char *, duckdb::LogicalType>> params) {
+inline void AddNamedParameters(FunctionT &function,
+                               std::initializer_list<std::pair<const char *, duckdb::LogicalType>> params) {
 #if LAKEMON_DUCKDB_2
 	duckdb::TypedKwargs options;
 	for (const auto &param : params) {
@@ -368,8 +367,7 @@ inline void FlushInlinedMaxDeleteFilesOnSet(duckdb::ClientContext &, duckdb::Set
 inline void RegisterLakemonSettings(duckdb::DatabaseInstance &db) {
 	auto &config = duckdb::DBConfig::GetConfig(db);
 	try {
-		config.AddExtensionOption("lakemon_log_stderr",
-		                          "Write lakemon maintain step start/end lines to stderr",
+		config.AddExtensionOption("lakemon_log_stderr", "Write lakemon maintain step start/end lines to stderr",
 		                          duckdb::LogicalType::BOOLEAN, duckdb::Value::BOOLEAN(false));
 		config.AddExtensionOption("lakemon_flush_inlined_max_delete_files",
 		                          "Skip ducklake_flush_inlined_data when the planned delete-file count "

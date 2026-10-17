@@ -139,8 +139,7 @@ inline bool TryParseBool(const std::string &raw, bool &out) noexcept {
 // CALL threshold (full-table rewrite); ApplyNativeOptions skips rewrite instead.
 inline double EffectiveRewriteThreshold(double ladder_threshold, const ResolvedOption &catalog) noexcept {
 	double catalog_value = 0;
-	if (catalog.found && TryParseDouble(catalog.value, catalog_value) && catalog_value > 0.0 &&
-	    catalog_value <= 1.0) {
+	if (catalog.found && TryParseDouble(catalog.value, catalog_value) && catalog_value > 0.0 && catalog_value <= 1.0) {
 		return catalog_value;
 	}
 	return ladder_threshold;
