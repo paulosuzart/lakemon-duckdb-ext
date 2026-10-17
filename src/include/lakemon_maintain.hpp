@@ -3,6 +3,7 @@
 #include "duckdb.hpp"
 #include "lakemon_sql.hpp"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,9 @@ struct MaintainRow {
 	// DuckLake / catalog SQL for this step. Empty for skip / inventory-only rows.
 	std::string sql;
 	PlannedCall planned_call = PlannedCall::None;
+	// Byte weight for progress logs. 0 means a unit weight (see StepWeight).
+	uint64_t planned_bytes = 0;
+	int64_t duration_ms = 0;
 };
 
 std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const MaintainOptions &options);
@@ -66,6 +70,8 @@ void RequireMaintainExecute(duckdb::ClientContext &context, bool has_prepared_pa
 // first error appends to details, marks later SQL rows skip / not-run, and
 // sets files_created from the CALL result row count. Interrupt rethrows so
 // the result rows are not returned; already-committed steps stay committed.
+// Logs start/end (step, table, duration, files, error, progress) to DuckDB
+// logging and optionally stderr.
 void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows);
 
 } // namespace lakemon

@@ -68,7 +68,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build ccache libpq-dev
+          sudo apt-get install -y ninja-build ccache libpq-dev postgresql-client
 
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -90,6 +90,6 @@ jobs:
         run: make -j"$(nproc)"
 
       - name: Execute maintain + expire on Postgres catalog
-        timeout-minutes: 2
+        timeout-minutes: 15
         run: |
-          python3 test/run_postgres_lake.py --timeout 90
+          python3 test/run_postgres_lake.py --timeout 180

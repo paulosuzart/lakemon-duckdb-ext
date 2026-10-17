@@ -22,6 +22,7 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
 
+#include <atomic>
 #include <exception>
 #include <new>
 #include <vector>
@@ -57,7 +58,7 @@ struct SetPolicyBindData : public TableFunctionData {
 
 struct RowState : public GlobalTableFunctionState {
 	vector<vector<Value>> rows;
-	idx_t offset = 0;
+	std::atomic<idx_t> offset {0};
 
 	idx_t MaxThreads() const override {
 		return 1;
@@ -72,8 +73,9 @@ static void EmitRows(ClientContext &, TableFunctionInput &input, DataChunk &outp
 	auto &state = input.global_state->Cast<RowState>();
 	idx_t count = 0;
 	const idx_t out_cols = output.ColumnCount();
-	while (state.offset < state.rows.size() && count < STANDARD_VECTOR_SIZE) {
-		auto &row = state.rows[state.offset++];
+	idx_t pos = state.offset.load();
+	while (pos < state.rows.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &row = state.rows[pos++];
 		const idx_t row_cols = static_cast<idx_t>(row.size());
 		const idx_t use_cols = row_cols < out_cols ? row_cols : out_cols;
 		for (idx_t col = 0; col < use_cols; col++) {
@@ -81,7 +83,16 @@ static void EmitRows(ClientContext &, TableFunctionInput &input, DataChunk &outp
 		}
 		count++;
 	}
+	state.offset.store(pos);
 	lakemon::FinishChunk(output, count);
+}
+
+// Negative = unknown. CALL / SELECT execute in bind_replace, so this path
+// only emits already-finished rows and would jump 0 → 100. Stderr step
+// lines carry the byte-weighted fraction instead.
+static double MaintainScanProgress(ClientContext &, const FunctionData *,
+                                   const GlobalTableFunctionState *) {
+	return -1;
 }
 
 static string RequireCatalog(const Value &value) {
@@ -706,16 +717,21 @@ static void AddNamedSetPolicyParams(TableFunction &function) {
 } // namespace
 
 void LoadInternal(ExtensionLoader &loader) {
+	lakemon::RegisterLakemonSettings(loader.GetDatabaseInstance());
+	lakemon::RegisterLakemonLogType(loader.GetDatabaseInstance());
+
 	auto version = ScalarFunction("lakemon_version", {}, LogicalType::VARCHAR, VersionFun);
 	loader.RegisterFunction(version);
 
 	TableFunctionSet maintain("lakemon_maintain");
 	TableFunction maintain_one({LogicalType::VARCHAR}, EmitRows, MaintainBind, MaintainInit);
 	maintain_one.bind_replace = MaintainBindReplace;
+	maintain_one.table_scan_progress = MaintainScanProgress;
 	AddNamedMaintainParams(maintain_one);
 	maintain.AddFunction(maintain_one);
 	TableFunction maintain_two({LogicalType::VARCHAR, LogicalType::VARCHAR}, EmitRows, MaintainBind, MaintainInit);
 	maintain_two.bind_replace = MaintainBindReplace;
+	maintain_two.table_scan_progress = MaintainScanProgress;
 	AddNamedMaintainParams(maintain_two);
 	maintain.AddFunction(maintain_two);
 	loader.RegisterFunction(maintain);
@@ -723,6 +739,7 @@ void LoadInternal(ExtensionLoader &loader) {
 	TableFunctionSet maintain_global("lakemon_maintain_global");
 	TableFunction maintain_global_one({LogicalType::VARCHAR}, EmitRows, GlobalMaintainBind, GlobalMaintainInit);
 	maintain_global_one.bind_replace = GlobalMaintainBindReplace;
+	maintain_global_one.table_scan_progress = MaintainScanProgress;
 	AddNamedGlobalMaintainParams(maintain_global_one);
 	maintain_global.AddFunction(maintain_global_one);
 	loader.RegisterFunction(maintain_global);

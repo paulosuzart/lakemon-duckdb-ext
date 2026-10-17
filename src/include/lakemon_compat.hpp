@@ -37,6 +37,24 @@
 #include "duckdb/main/materialized_query_result.hpp"
 #endif
 
+#include "duckdb/main/config.hpp"
+
+#if defined(__has_include)
+#if __has_include("duckdb/logging/logger.hpp")
+#define LAKEMON_HAS_DUCKDB_LOG 1
+#include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/log_type.hpp"
+#include "duckdb/logging/logger.hpp"
+#else
+#define LAKEMON_HAS_DUCKDB_LOG 0
+#endif
+#else
+#define LAKEMON_HAS_DUCKDB_LOG 1
+#include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/log_type.hpp"
+#include "duckdb/logging/logger.hpp"
+#endif
+
 #include <initializer_list>
 #include <utility>
 
@@ -55,14 +73,8 @@ inline const char *SafeWhat(const std::exception &ex) {
 	return msg ? msg : "unknown error";
 }
 
-// Nested SQL on a fresh Connection so a failed DuckLake CALL does not poison
-// the ClientContext that is executing lakemon_*. Interrupt and bad_alloc are rethrown.
-inline duckdb::unique_ptr<QueryHandle> RunSQL(duckdb::ClientContext &context, const std::string &sql) {
-	if (!context.db) {
-		throw duckdb::InvalidInputException("lakemon: database handle is not available");
-	}
+inline duckdb::unique_ptr<QueryHandle> QueryOn(duckdb::Connection &con, const std::string &sql) {
 	try {
-		duckdb::Connection con(*context.db);
 		auto result = con.Query(sql);
 		if (!result) {
 			throw duckdb::InvalidInputException("lakemon: query returned no result");
@@ -84,6 +96,16 @@ inline duckdb::unique_ptr<QueryHandle> RunSQL(duckdb::ClientContext &context, co
 	} catch (const std::exception &ex) {
 		throw duckdb::InvalidInputException("lakemon: %s", SafeWhat(ex));
 	}
+}
+
+// Nested SQL on a fresh Connection so a failed DuckLake CALL does not poison
+// the ClientContext that is executing lakemon_*. Interrupt and bad_alloc are rethrown.
+inline duckdb::unique_ptr<QueryHandle> RunSQL(duckdb::ClientContext &context, const std::string &sql) {
+	if (!context.db) {
+		throw duckdb::InvalidInputException("lakemon: database handle is not available");
+	}
+	duckdb::Connection con(*context.db);
+	return QueryOn(con, sql);
 }
 
 // One cell from a materialized query. Out-of-range or expected DuckDB / benign
@@ -215,6 +237,105 @@ inline void AddNamedParameters(
 		function.named_parameters[param.first] = param.second;
 	}
 #endif
+}
+
+#if LAKEMON_HAS_DUCKDB_LOG
+struct LakemonLogType : public duckdb::LogType {
+	static constexpr const char *NAME = "lakemon";
+	static constexpr duckdb::LogLevel LEVEL = duckdb::LogLevel::LOG_INFO;
+
+	LakemonLogType() : LogType(NAME, LEVEL) {
+	}
+
+	static duckdb::string ConstructLogMessage(const duckdb::string &message) {
+		return message;
+	}
+};
+#endif
+
+inline void WriteLakemonLog(duckdb::ClientContext &context, const std::string &message) {
+#if LAKEMON_HAS_DUCKDB_LOG
+	// Do not use DUCKDB_LOG_* macros here: they expand to unqualified
+	// Logger / LogLevel and fail to compile inside namespace lakemon.
+	try {
+		duckdb::Logger &logger = duckdb::Logger::Get(context);
+		if (logger.ShouldLog("lakemon", duckdb::LogLevel::LOG_INFO)) {
+			logger.WriteLog("lakemon", duckdb::LogLevel::LOG_INFO, message);
+		}
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
+#else
+	(void)context;
+	(void)message;
+#endif
+}
+
+inline bool TryGetSettingValue(duckdb::ClientContext &context, const char *name, duckdb::Value &value) {
+	try {
+		return static_cast<bool>(context.TryGetCurrentSetting(name, value));
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		return false;
+	} catch (const std::exception &) {
+		return false;
+	}
+}
+
+inline bool GetBooleanSetting(duckdb::ClientContext &context, const char *name, bool fallback) {
+	duckdb::Value value;
+	if (!TryGetSettingValue(context, name, value) || value.IsNull()) {
+		return fallback;
+	}
+	try {
+		return duckdb::BooleanValue::Get(value);
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		return fallback;
+	} catch (const std::exception &) {
+		return fallback;
+	}
+}
+
+inline void RegisterLakemonLogType(duckdb::DatabaseInstance &db) {
+#if LAKEMON_HAS_DUCKDB_LOG
+	try {
+		db.GetLogManager().RegisterLogType(duckdb::make_uniq<LakemonLogType>());
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
+#else
+	(void)db;
+#endif
+}
+
+inline void RegisterLakemonSettings(duckdb::DatabaseInstance &db) {
+	auto &config = duckdb::DBConfig::GetConfig(db);
+	try {
+		config.AddExtensionOption("lakemon_log_stderr",
+		                          "Write lakemon maintain step start/end lines to stderr",
+		                          duckdb::LogicalType::BOOLEAN, duckdb::Value::BOOLEAN(false));
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
 }
 
 } // namespace lakemon

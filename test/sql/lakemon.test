@@ -140,6 +140,18 @@ SELECT lakemon_version();
 ----
 0.1.1
 
+# Observability settings register with the extension.
+statement ok
+SET lakemon_log_stderr = true;
+
+query I
+SELECT current_setting('lakemon_log_stderr')::BOOLEAN;
+----
+true
+
+statement ok
+RESET lakemon_log_stderr;
+
 statement error
 CALL lakemon_set_policy('');
 ----

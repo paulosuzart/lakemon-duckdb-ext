@@ -2,7 +2,9 @@
 """Execute lakemon_maintain / lakemon_maintain_global against a Postgres DuckLake catalog.
 
 A hang fails via --timeout (default 90s) around each mutating CALL.
-Asserts: inlined data flushed, fewer data files after merge, old snapshots expired.
+Asserts: inlined data flushed, fewer data files after merge, old snapshots expired,
+per-step stderr logs (lakemon_log_stderr) with byte-weighted progress, hundreds of
+files, and a concurrent catalog lock that must produce status=error (not a hang).
 """
 
 from __future__ import annotations
@@ -10,9 +12,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -23,6 +28,13 @@ CATALOG = "lake"
 SCHEMA = "bronze_financial"
 TABLE = "subscription"
 QUALIFIED = f"{SCHEMA}.{TABLE}"
+HEAVY_TABLE = "events"
+HEAVY_QUALIFIED = f"{SCHEMA}.{HEAVY_TABLE}"
+HEAVY_FILE_COUNT = 128
+# Generous per-step cap so a lock wait or planner hang fails CI without
+# flaking on a slow runner. Hundreds of small files should stay well under this.
+STEP_DURATION_LIMIT_MS = 120_000
+CONCURRENT_TIMEOUT = 25
 
 
 class Failed(Exception):
@@ -119,10 +131,18 @@ class LakeSession:
 		self.data_path = data_path
 		self.loads = loads
 		self.inlining_row_limit = 10
+		self.last_stderr = ""
+		self.last_stdout = ""
+		# libpq startup options, no spaces (e.g. -clock_timeout=5s). Applied to
+		# DuckLake's catalog connection at ATTACH.
+		self.pg_options = ""
 
 	def preamble(self) -> str:
+		pg = self.pg
+		if self.pg_options:
+			pg = f"{self.pg} options={self.pg_options}"
 		attach = (
-			f"ATTACH 'ducklake:postgres:{self.pg}' AS {CATALOG} "
+			f"ATTACH 'ducklake:postgres:{pg}' AS {CATALOG} "
 			f"(DATA_PATH '{self.data_path}', DATA_INLINING_ROW_LIMIT {self.inlining_row_limit});"
 		)
 		return "\n".join([part for part in self.loads if part] + [attach])
@@ -140,7 +160,11 @@ class LakeSession:
 				cwd=str(ROOT),
 			)
 		except subprocess.TimeoutExpired as exc:
+			self.last_stdout = exc.stdout or ""
+			self.last_stderr = exc.stderr or ""
 			raise Failed(f"TIMEOUT: DuckDB exceeded {timeout}s (hang)\nSQL:\n{sql}") from exc
+		self.last_stdout = result.stdout
+		self.last_stderr = result.stderr
 		if result.returncode != 0:
 			raise Failed(
 				f"duckdb exited {result.returncode}\nSQL:\n{sql}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -172,6 +196,28 @@ class LakeSession:
 		if not row:
 			raise Failed(f"empty row for: {sql}")
 		return int(next(iter(row.values())))
+
+	def query_result_sets(self, sql: str, timeout: int | None = None) -> list:
+		out = self.run(sql, timeout=timeout)
+		docs = []
+		decoder = json.JSONDecoder()
+		i = 0
+		text = out.strip()
+		while i < len(text):
+			while i < len(text) and text[i].isspace():
+				i += 1
+			if i >= len(text):
+				break
+			try:
+				obj, end = decoder.raw_decode(text, i)
+			except json.JSONDecodeError as exc:
+				raise Failed(f"unparseable duckdb JSON at {i}:\n{out}") from exc
+			if isinstance(obj, dict):
+				docs.append([obj])
+			elif isinstance(obj, list):
+				docs.append(obj)
+			i = end
+		return docs
 
 
 def count_files(session: LakeSession) -> int:
@@ -343,6 +389,138 @@ def assert_execute_guards(session: LakeSession, timeout: int) -> None:
 	print(f"execute guards ok: snapshots={snaps} files={files} inlined_rows={inlined}")
 
 
+def stderr_step_lines(stderr: str) -> list[str]:
+	return [line for line in stderr.splitlines() if line.startswith("lakemon ")]
+
+
+def assert_stderr_steps(stderr: str, limit_ms: int) -> None:
+	lines = stderr_step_lines(stderr)
+	starts = [line for line in lines if line.startswith("lakemon start")]
+	ends = [line for line in lines if line.startswith("lakemon end")]
+	if len(starts) < 1 or len(ends) < 1:
+		raise Failed(f"lakemon_log_stderr=true should write start/end lines:\n{stderr}")
+	if not any("progress=" in line for line in lines):
+		raise Failed(f"expected progress= on stderr step lines:\n{stderr}")
+	slow = []
+	seen = 0
+	for line in ends:
+		match = re.search(r"duration_ms=(\d+)", line)
+		if not match:
+			continue
+		seen += 1
+		duration = int(match.group(1))
+		print(f"step duration: {line}")
+		if duration > limit_ms:
+			slow.append((duration, line))
+	if seen < 1:
+		raise Failed(f"no duration_ms values on stderr:\n{stderr}")
+	if slow:
+		raise Failed(f"step duration exceeded {limit_ms}ms: {slow}")
+	print(f"stderr step logs ok: starts={len(starts)} ends={len(ends)}")
+
+
+def pg_env(pg: str) -> dict:
+	env = os.environ.copy()
+	for part in shlex.split(pg):
+		if "=" not in part:
+			continue
+		key, value = part.split("=", 1)
+		if key == "dbname":
+			env["PGDATABASE"] = value
+		elif key == "host":
+			env["PGHOST"] = value
+		elif key == "port":
+			env["PGPORT"] = value
+		elif key == "user":
+			env["PGUSER"] = value
+		elif key == "password":
+			env["PGPASSWORD"] = value
+	env.setdefault("PGDATABASE", "lakemon")
+	env.setdefault("PGHOST", "127.0.0.1")
+	env.setdefault("PGUSER", "postgres")
+	env.setdefault("PGPASSWORD", "postgres")
+	return env
+
+
+def have_psql() -> bool:
+	try:
+		result = subprocess.run(["psql", "--version"], capture_output=True, text=True, timeout=10)
+		return result.returncode == 0
+	except (OSError, subprocess.TimeoutExpired):
+		return False
+
+
+def psql(pg: str, sql: str, timeout: int = 30) -> str:
+	result = subprocess.run(
+		["psql", "-v", "ON_ERROR_STOP=1", "-P", "pager=off", "-c", sql],
+		env=pg_env(pg),
+		text=True,
+		capture_output=True,
+		timeout=timeout,
+	)
+	if result.returncode != 0:
+		raise Failed(f"psql failed: {result.stderr or result.stdout}\nSQL:\n{sql}")
+	return result.stdout
+
+
+def dump_pg_locks(pg: str, label: str) -> str:
+	sql = """
+	SELECT now() AS dumped_at;
+	SELECT pid, usename, state, wait_event_type, wait_event, left(query, 180) AS query
+	FROM pg_stat_activity
+	WHERE datname = current_database()
+	ORDER BY pid;
+	SELECT locktype, relation::regclass AS relation, mode, granted, pid
+	FROM pg_locks
+	WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database())
+	ORDER BY granted, pid, relation::text;
+	"""
+	try:
+		text = psql(pg, sql)
+	except Failed as exc:
+		text = str(exc)
+	print(f"--- pg_locks / pg_stat_activity ({label}) ---")
+	print(text)
+	print(f"--- end pg dump ({label}) ---")
+	return text
+
+
+def list_ducklake_pg_tables(pg: str) -> list[tuple[str, str]]:
+	out = psql(
+		pg,
+		"SELECT n.nspname, c.relname FROM pg_class c "
+		"JOIN pg_namespace n ON n.oid = c.relnamespace "
+		"WHERE c.relkind = 'r' AND (c.relname ILIKE '%ducklake%' OR c.relname ILIKE '%snapshot%') "
+		"ORDER BY 1, 2;",
+	)
+	tables = []
+	for line in out.splitlines():
+		if "|" not in line or "nspname" in line or "---" in line:
+			continue
+		parts = [part.strip() for part in line.split("|")]
+		if len(parts) >= 2 and parts[0] and parts[1]:
+			tables.append((parts[0], parts[1]))
+	return tables
+
+
+def quote_ident(name: str) -> str:
+	return '"' + name.replace('"', '""') + '"'
+
+
+def pick_lock_targets(tables: list[tuple[str, str]]) -> list[str]:
+	targets = [
+		quote_ident(schema) + "." + quote_ident(name)
+		for schema, name in tables
+		if "snapshot" in name.lower()
+	]
+	if targets:
+		return targets
+	if tables:
+		schema, name = tables[0]
+		return [quote_ident(schema) + "." + quote_ident(name)]
+	return []
+
+
 def execute_maintain(session: LakeSession, timeout: int) -> None:
 	rows_before = count_rows(session)
 	files_before = count_files(session)
@@ -358,11 +536,17 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 		raise Failed(f"setup did not keep many small files before maintain (files={files_before})")
 
 	rows = session.query_rows(
-		f"SELECT step, action, status, files_created FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false);",
+		f"""
+		SET lakemon_log_stderr = true;
+		SELECT step, action, status, files_created FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false);
+		""",
 		timeout=timeout,
 	)
 	print("maintain result:")
 	print(json.dumps(rows, indent=2))
+	print("maintain stderr:")
+	print(session.last_stderr)
+	assert_stderr_steps(session.last_stderr, STEP_DURATION_LIMIT_MS)
 	flush = [row for row in rows if row.get("step") == "flush_inlined"]
 	if not flush or flush[0].get("status") != "ok":
 		raise Failed(f"flush_inlined did not run to ok: {flush}")
@@ -425,6 +609,344 @@ def execute_expire(session: LakeSession, timeout: int) -> None:
 		raise Failed("table empty after expire")
 
 
+def seed_heavy(session: LakeSession, table: str, files: int, timeout: int) -> None:
+	qualified = f"{SCHEMA}.{table}"
+	session.inlining_row_limit = 0
+	inserts = "\n".join(
+		f"INSERT INTO {CATALOG}.{qualified} VALUES "
+		f"({1000 + i}, 'heavy-{i}-a'), ({2000 + i}, 'heavy-{i}-b');"
+		for i in range(files)
+	)
+	body = f"""
+		CREATE TABLE IF NOT EXISTS {CATALOG}.{qualified}(id INTEGER, payload VARCHAR);
+		{inserts}
+		DELETE FROM {CATALOG}.{qualified} WHERE id >= 1000 AND id < {1000 + max(8, files // 8)};
+		"""
+	try:
+		session.run(
+			f"CALL ducklake_set_option('{CATALOG}', 'data_inlining_row_limit', 0);\n{body}",
+			timeout=timeout,
+		)
+	except Failed:
+		session.run(f"CALL {CATALOG}.set_option('data_inlining_row_limit', 0);\n{body}", timeout=timeout)
+	live_files = session.query_int(
+		f"SELECT count(*)::BIGINT AS n FROM ducklake_list_files('{CATALOG}', '{table}', schema => '{SCHEMA}');"
+	)
+	if live_files < files:
+		raise Failed(f"heavy seed expected at least {files} files, got {live_files}")
+	print(f"heavy seed: table={qualified} files={live_files} rows={session.query_int(f'SELECT count(*)::BIGINT AS n FROM {CATALOG}.{qualified};')}")
+
+
+def execute_heavy_maintain(session: LakeSession, timeout: int, pg: str) -> None:
+	session.inlining_row_limit = 0
+	stop = threading.Event()
+	dumps = []
+
+	def sampler() -> None:
+		while not stop.wait(2.0):
+			try:
+				dumps.append(dump_pg_locks(pg, "heavy-maintain"))
+			except Exception as exc:  # noqa: BLE001
+				dumps.append(str(exc))
+
+	thread = threading.Thread(target=sampler, daemon=True)
+	thread.start()
+	try:
+		maintain_rows = session.query_rows(
+			f"""
+			SET lakemon_log_stderr = true;
+			SELECT step, action, status, files_created
+			FROM lakemon_maintain('{CATALOG}', '{HEAVY_QUALIFIED}', dry_run => false);
+			""",
+			timeout=timeout,
+		)
+	finally:
+		stop.set()
+		thread.join(timeout=5)
+
+	print("heavy maintain result:")
+	print(json.dumps(maintain_rows, indent=2))
+	print("heavy maintain stderr:")
+	print(session.last_stderr)
+	if not any(row.get("step") == "merge" and row.get("status") == "ok" for row in maintain_rows):
+		raise Failed(f"heavy maintain did not merge: {maintain_rows}")
+	assert_stderr_steps(session.last_stderr, STEP_DURATION_LIMIT_MS)
+	lock_waits = [text for text in dumps if "Lock" in text or "lock" in text]
+	print(f"heavy maintain lock samples={len(dumps)} texts_mentioning_lock={len(lock_waits)}")
+
+
+def wait_until(timeout_s: float, label: str, fn, required: bool = True, interval: float = 0.2):
+	deadline = time.time() + timeout_s
+	last = None
+	while time.time() < deadline:
+		last = fn()
+		if last:
+			return last
+		time.sleep(interval)
+	if required:
+		raise Failed(f"timed out waiting for {label} after {timeout_s}s")
+	return last
+
+
+def hold_psql_lock(pg: str, relations: list[str], mode: str = "EXCLUSIVE") -> subprocess.Popen:
+	# EXCLUSIVE blocks INSERT/UPDATE (catalog commit) but not SELECT (inventory).
+	# ACCESS EXCLUSIVE would also block inventory reads.
+	if not relations:
+		raise Failed("no Postgres relations to lock")
+	locks = "\n".join(f"LOCK TABLE {relation} IN {mode} MODE;" for relation in relations)
+	proc = subprocess.Popen(
+		["psql", "-v", "ON_ERROR_STOP=1", "-P", "pager=off"],
+		env=pg_env(pg),
+		stdin=subprocess.PIPE,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.STDOUT,
+		text=True,
+	)
+	assert proc.stdin is not None
+	proc.stdin.write(f"BEGIN;\n{locks}\nSELECT 'locked' AS status;\nSELECT pg_sleep(90);\n")
+	proc.stdin.flush()
+	if proc.poll() is not None:
+		out = proc.stdout.read() if proc.stdout else ""
+		raise Failed(f"psql lock holder exited early: {out}")
+	return proc
+
+
+def hold_duckdb_catalog_read(session: LakeSession) -> subprocess.Popen:
+	sql = session.preamble() + f"""
+	BEGIN;
+	SELECT count(*) FROM ducklake_snapshots('{CATALOG}');
+	SELECT count(*) FROM {CATALOG}.{SCHEMA}.{TABLE};
+	SELECT 1;
+	"""
+	proc = subprocess.Popen(
+		[session.duckdb, "-unsigned", ":memory:"],
+		stdin=subprocess.PIPE,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.STDOUT,
+		text=True,
+		cwd=str(ROOT),
+	)
+	assert proc.stdin is not None
+	proc.stdin.write(sql)
+	proc.stdin.flush()
+	if proc.poll() is not None:
+		out = proc.stdout.read() if proc.stdout else ""
+		raise Failed(f"second DuckDB session exited early: {out}")
+	return proc
+
+
+def finish_or_clear_error(exc: Failed, timeout: int) -> str:
+	text = str(exc)
+	if "TIMEOUT" in text:
+		raise Failed(f"maintain hung under a concurrent catalog session (>{timeout}s):\n{text}")
+	return text
+
+
+LOCK_ERROR_NEEDLES = (
+	"lock timeout",
+	"canceling statement due to lock",
+	"could not obtain lock",
+	"deadlock detected",
+	"another duckdb session",
+)
+
+
+def looks_like_lock_error(text: str) -> bool:
+	return any(needle in text for needle in LOCK_ERROR_NEEDLES)
+
+
+def run_maintain_capture(session: LakeSession, sql: str, timeout: int):
+	started = time.time()
+	try:
+		rows = session.query_rows(sql, timeout=timeout)
+		return rows, None, time.time() - started
+	except Failed as exc:
+		return None, finish_or_clear_error(exc, timeout), time.time() - started
+
+
+def assert_maintain_lock_failure(rows, err_text: str | None, elapsed: float, label: str) -> None:
+	error_rows = [row for row in (rows or []) if row.get("status") == "error"]
+	details = [str(row.get("details", "")) for row in error_rows]
+	if err_text:
+		details.append(err_text)
+	blob = "\n".join(details).lower()
+	if not error_rows and not err_text:
+		raise Failed(f"{label}: maintain succeeded while a catalog write lock was held: {rows}")
+	if not looks_like_lock_error(blob):
+		raise Failed(
+			f"{label}: expected status=error details (or exception) naming lock timeout, "
+			f"got rows={rows} err={err_text}"
+		)
+	print(f"{label}: lock error in {elapsed:.1f}s error_rows={json.dumps(error_rows, default=str)}")
+	print(session_details_preview(rows, err_text))
+
+
+def session_details_preview(rows, err_text: str | None) -> str:
+	if err_text:
+		return err_text
+	return json.dumps(rows or [], indent=2)
+
+
+def sql_literal(value: str) -> str:
+	return "'" + value.replace("'", "''") + "'"
+
+
+def exclusive_locks_granted(pg: str, table_pairs: list[tuple[str, str]]) -> str:
+	if not table_pairs:
+		return ""
+	pairs = ", ".join(f"({sql_literal(schema)}, {sql_literal(name)})" for schema, name in table_pairs)
+	sql = f"""
+	SELECT n.nspname || '.' || c.relname AS relation, l.mode, l.granted, l.pid
+	FROM pg_locks l
+	JOIN pg_class c ON c.oid = l.relation
+	JOIN pg_namespace n ON n.oid = c.relnamespace
+	WHERE l.granted
+	  AND l.mode = 'ExclusiveLock'
+	  AND (n.nspname, c.relname) IN ({pairs});
+	"""
+	out = psql(pg, sql)
+	for line in out.splitlines():
+		if "|" not in line or "relation" in line or "---" in line:
+			continue
+		parts = [part.strip() for part in line.split("|")]
+		if len(parts) >= 3 and parts[1] == "ExclusiveLock" and parts[2] in ("t", "true"):
+			return out
+	return ""
+
+
+def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> None:
+	if not have_psql():
+		raise Failed("psql is required to dump pg_locks and hold a catalog lock")
+
+	tables = list_ducklake_pg_tables(pg)
+	print(f"postgres ducklake tables: {tables}")
+	relations = pick_lock_targets(tables)
+	print(f"lock targets: {relations}")
+	dump_pg_locks(pg, "before-concurrent")
+
+	# Second DuckDB session: BEGIN + catalog read. postgres_scanner may or may
+	# not keep a Postgres transaction; wait for the process, then dump locks.
+	duck_holder = hold_duckdb_catalog_read(session)
+	try:
+		wait_until(
+			5,
+			"second DuckDB process still running",
+			lambda: duck_holder.poll() is None,
+		)
+
+		def second_session_idle():
+			dump = dump_pg_locks(pg, "second-duckdb-session")
+			return dump if "idle in transaction" in dump.lower() else ""
+
+		duck_locks = wait_until(
+			8,
+			"idle-in-transaction from second DuckDB session",
+			second_session_idle,
+			required=False,
+		) or dump_pg_locks(pg, "second-duckdb-session")
+		rows, err, elapsed = run_maintain_capture(
+			session,
+			f"""
+			SET lakemon_log_stderr = true;
+			SELECT step, status, details FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false)
+			WHERE step = 'flush_inlined';
+			""",
+			timeout,
+		)
+		if err:
+			print(f"second DuckDB session: maintain failed in {elapsed:.1f}s without hanging")
+			print(err)
+			second_session_blocked = True
+			if not looks_like_lock_error(err):
+				print("note: error did not name a catalog lock; recorded as a non-hang failure")
+		else:
+			error_rows = [row for row in rows if row.get("status") == "error"]
+			if error_rows:
+				print(f"second DuckDB session: maintain returned error rows in {elapsed:.1f}s")
+				print(json.dumps(error_rows, indent=2))
+				second_session_blocked = True
+			else:
+				print(
+					f"second DuckDB session: maintain finished in {elapsed:.1f}s "
+					"(DuckDB BEGIN did not block the catalog commit)"
+				)
+				second_session_blocked = False
+		print(
+			"second DuckDB session lock dump mentioned idle-in-transaction="
+			f"{'idle in transaction' in (duck_locks or '').lower()}"
+		)
+		print(f"second DuckDB session blocked_maintain={second_session_blocked}")
+	finally:
+		if duck_holder.poll() is None:
+			duck_holder.terminate()
+		duck_holder.wait(timeout=5)
+
+	if not relations:
+		print("no Postgres snapshot relation found; skip EXCLUSIVE holder")
+		return
+
+	# A no-op flush does not write ducklake_snapshot, so ExclusiveLock would
+	# not block it. Seed at least two new files so merge must commit.
+	session.inlining_row_limit = 0
+	contention = f"""
+		INSERT INTO {CATALOG}.{QUALIFIED} VALUES (9101, 'lock-a'), (9102, 'lock-b');
+		INSERT INTO {CATALOG}.{QUALIFIED} VALUES (9103, 'lock-c'), (9104, 'lock-d');
+		INSERT INTO {CATALOG}.{QUALIFIED} VALUES (9105, 'lock-e'), (9106, 'lock-f');
+		"""
+	try:
+		session.run(
+			f"CALL ducklake_set_option('{CATALOG}', 'data_inlining_row_limit', 0);\n{contention}",
+			timeout=timeout,
+		)
+	except Failed:
+		session.run(f"CALL {CATALOG}.set_option('data_inlining_row_limit', 0);\n{contention}", timeout=timeout)
+	contention_files = count_files(session)
+	print(f"contention seed: files={contention_files}")
+	if contention_files < 2:
+		raise Failed(f"contention seed expected at least 2 files, got {contention_files}")
+	# Hold the lock only after the seed commits.
+
+	# DuckLake commit uses its own PGconn. Fail-fast is libpq
+	# options=-clock_timeout on ATTACH. Do not ALTER DATABASE.
+	lock_tables = [(schema, name) for schema, name in tables if "snapshot" in name.lower()]
+	if not lock_tables and tables:
+		lock_tables = [tables[0]]
+	locked_session = LakeSession(session.duckdb, session.pg, session.data_path, session.loads)
+	locked_session.inlining_row_limit = 0
+	locked_session.pg_options = "-clock_timeout=5s"
+	holder = hold_psql_lock(pg, relations, "EXCLUSIVE")
+	try:
+		def exclusive_held():
+			dump = dump_pg_locks(pg, "wait-exclusive")
+			granted = exclusive_locks_granted(pg, lock_tables)
+			return dump if granted else ""
+
+		held = wait_until(10, "granted ExclusiveLock on the snapshot relation", exclusive_held)
+		print("psql EXCLUSIVE lock is visible")
+		print(held)
+		rows, err, elapsed = run_maintain_capture(
+			locked_session,
+			f"""
+			SET lakemon_log_stderr = true;
+			SELECT step, action, status, details FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false);
+			""",
+			CONCURRENT_TIMEOUT,
+		)
+		print("psql EXCLUSIVE maintain rows:")
+		print(json.dumps(rows, indent=2) if rows is not None else "(no rows; exception path)")
+		print("psql EXCLUSIVE maintain stderr:")
+		print(locked_session.last_stderr)
+		if elapsed > CONCURRENT_TIMEOUT:
+			raise Failed(f"maintain took too long under a held catalog lock: {elapsed:.1f}s")
+		assert_maintain_lock_failure(rows, err, elapsed, "psql EXCLUSIVE")
+		dump_pg_locks(pg, "psql-exclusive-after")
+	finally:
+		if holder.poll() is None:
+			holder.terminate()
+		holder.wait(timeout=5)
+	dump_pg_locks(pg, "after-concurrent")
+
+
 def main() -> int:
 	args = parse_args()
 	duckdb = Path(args.duckdb)
@@ -456,6 +978,10 @@ def main() -> int:
 		assert_execute_guards(session, args.timeout)
 		execute_maintain(session, args.timeout)
 		execute_expire(session, args.timeout)
+		heavy_timeout = max(args.timeout, 180)
+		seed_heavy(session, HEAVY_TABLE, HEAVY_FILE_COUNT, heavy_timeout)
+		execute_heavy_maintain(session, heavy_timeout, args.pg)
+		execute_concurrent_catalog(session, args.timeout, args.pg)
 	except Failed as exc:
 		print(str(exc), file=sys.stderr)
 		return 1

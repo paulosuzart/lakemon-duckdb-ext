@@ -2,14 +2,18 @@
 
 #include "lakemon_catalog.hpp"
 #include "lakemon_compat.hpp"
+#include "lakemon_observe.hpp"
 #include "lakemon_pipeline.hpp"
 #include "lakemon_policy.hpp"
+#include "lakemon_progress.hpp"
 #include "lakemon_store.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/client_context.hpp"
 
+#include <chrono>
 #include <exception>
+#include <iostream>
 #include <new>
 #include <sstream>
 
@@ -34,10 +38,11 @@ static MaintainRow MakeRow(const std::string &step, const std::string &schema, c
 
 static void AppendPlanned(std::vector<MaintainRow> &rows, const std::string &step, const std::string &action,
                           const std::string &sql, const std::string &schema, const std::string &table,
-                          const std::string &details, int64_t processed = 0) {
+                          const std::string &details, int64_t processed = 0, uint64_t planned_bytes = 0) {
 	MaintainRow row = MakeRow(step, schema, table, action, "planned", processed, 0, details + " | " + sql);
 	row.sql = sql;
 	row.planned_call = PlannedCall::DuckLake;
+	row.planned_bytes = planned_bytes;
 	rows.push_back(std::move(row));
 }
 
@@ -111,12 +116,8 @@ static void AppendDetails(MaintainRow &row, const std::string &suffix) {
 	row.details += suffix;
 }
 
-static bool DuckLakeFunctionRegistered(duckdb::ClientContext &context) {
-	if (!context.db) {
-		return false;
-	}
+static bool DuckLakeFunctionRegistered(duckdb::Connection &con) {
 	try {
-		duckdb::Connection con(*context.db);
 		auto result =
 		    con.Query("SELECT 1 FROM duckdb_functions() WHERE function_name = 'ducklake_expire_snapshots' LIMIT 1");
 		if (!result || result->HasError()) {
@@ -134,34 +135,82 @@ static bool DuckLakeFunctionRegistered(duckdb::ClientContext &context) {
 	}
 }
 
+static uint64_t RowWeight(const MaintainRow &row) {
+	return StepWeight(row.planned_bytes, row.files_processed);
+}
+
+static uint64_t SumRowWeights(const std::vector<MaintainRow> &rows) {
+	uint64_t total = 0;
+	for (const auto &row : rows) {
+		total += RowWeight(row);
+	}
+	return total;
+}
+
+static void EmitStepLog(duckdb::ClientContext &context, bool start, const MaintainRow &row, uint64_t completed_weight,
+                        uint64_t total_weight, const std::string &error) {
+	const double progress = ProgressFraction(completed_weight, total_weight);
+	const std::string line =
+	    FormatStepLog(start, row.step, row.action, row.schema_name, row.table_name, row.status, row.files_processed,
+	                  row.files_created, row.planned_bytes, progress, row.duration_ms, error);
+	WriteLakemonLog(context, line);
+	if (GetBooleanSetting(context, kLogStderrSetting, false)) {
+		const std::string out = line + "\n";
+		std::cerr.write(out.data(), static_cast<std::streamsize>(out.size()));
+		std::cerr.flush();
+	}
+}
+
 void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows) {
+	if (!context.db) {
+		throw duckdb::InvalidInputException("lakemon: database handle is not available");
+	}
+	// Nested Connection so a failed DuckLake CALL does not poison the
+	// ClientContext that is executing lakemon_*.
+	duckdb::Connection con(*context.db);
+
 	bool failed = false;
 	bool interrupted = false;
 	bool ducklake_checked = false;
 	bool ducklake_present = true;
+	const uint64_t total_weight = SumRowWeights(rows);
+	uint64_t completed_weight = 0;
 	for (auto &row : rows) {
+		const uint64_t weight = RowWeight(row);
 		if (row.sql.empty()) {
+			EmitStepLog(context, true, row, completed_weight, total_weight, "");
+			row.duration_ms = 0;
+			EmitStepLog(context, false, row, completed_weight + weight, total_weight, "");
+			completed_weight += weight;
 			continue;
 		}
 		if (failed) {
 			row.status = "skip";
 			AppendDetails(row, interrupted ? "not run: interrupted" : "not run: previous step failed");
+			EmitStepLog(context, true, row, completed_weight, total_weight, "");
+			EmitStepLog(context, false, row, completed_weight + weight, total_weight, row.details);
+			completed_weight += weight;
 			continue;
 		}
 		if (row.planned_call == PlannedCall::DuckLake) {
 			if (!ducklake_checked) {
-				ducklake_present = DuckLakeFunctionRegistered(context);
+				ducklake_present = DuckLakeFunctionRegistered(con);
 				ducklake_checked = true;
 			}
 			if (!ducklake_present) {
 				row.status = "error";
 				AppendDetails(row, "lakemon: ducklake is not loaded");
 				failed = true;
+				EmitStepLog(context, true, row, completed_weight, total_weight, "");
+				EmitStepLog(context, false, row, completed_weight + weight, total_weight, row.details);
+				completed_weight += weight;
 				continue;
 			}
 		}
+		EmitStepLog(context, true, row, completed_weight, total_weight, "");
+		const auto started = std::chrono::steady_clock::now();
 		try {
-			auto result = RunSQL(context, row.sql);
+			auto result = QueryOn(con, row.sql);
 			row.status = "ok";
 			if (result) {
 				row.files_created = ResultRowCount(*result);
@@ -175,13 +224,18 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 			throw;
 		} catch (const Exception &ex) {
 			row.status = "error";
-			AppendDetails(row, SafeWhat(ex));
+			AppendDetails(row, AnnotateCatalogLockError(SafeWhat(ex)));
 			failed = true;
 		} catch (const std::exception &ex) {
 			row.status = "error";
-			AppendDetails(row, SafeWhat(ex));
+			AppendDetails(row, AnnotateCatalogLockError(SafeWhat(ex)));
 			failed = true;
 		}
+		row.duration_ms = static_cast<int64_t>(
+		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
+		const std::string error = (row.status == "error") ? row.details : std::string();
+		EmitStepLog(context, false, row, completed_weight + weight, total_weight, error);
+		completed_weight += weight;
 	}
 	if (interrupted) {
 		throw duckdb::InterruptException();
@@ -274,7 +328,7 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 			AppendPlanned(rows, "rewrite", step.band,
 			              RewriteDataFilesCall(options.catalog, ref, step.delete_threshold), hint.schema_name,
 			              hint.table_name, policy::FormatRewriteStepDetails(step),
-			              static_cast<int64_t>(step.files.size()));
+			              static_cast<int64_t>(step.files.size()), step.planned_bytes);
 		}
 	}
 
@@ -295,9 +349,11 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 		}
 		for (const auto &tier : active.tiers) {
 			uint64_t candidates = 0;
+			uint64_t candidate_bytes = 0;
 			for (const auto &file : table_files) {
 				if (policy::FileQualifiesForMergeTier(file, tier)) {
 					candidates++;
+					candidate_bytes += file.file_size_bytes;
 				}
 			}
 			if (candidates < 2) {
@@ -325,7 +381,8 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 			AppendPlanned(rows, "merge", std::string("tier_") + tier.name, merge_sql.str(), hint.schema_name,
 			              hint.table_name,
 			              std::string("band ") + std::to_string(tier.min_file_size) + "-" +
-			                  std::to_string(tier.max_file_size) + " -> " + target);
+			                  std::to_string(tier.max_file_size) + " -> " + target,
+			              static_cast<int64_t>(candidates), candidate_bytes);
 		}
 	}
 

@@ -178,6 +178,12 @@ CALL lakemon_maintain_global('no_such_lake', 'main.events');
 ----
 lakemon_maintain_global
 
+statement ok
+SET lakemon_log_stderr = true;
+
+statement ok
+RESET lakemon_log_stderr;
+
 # Session remains usable after the inventory / global error rows.
 query I
 SELECT lakemon_version();
