@@ -69,7 +69,8 @@ static std::string PlanRowsSelect(const std::vector<MaintainRow> &rows, bool exe
 	return sql.str();
 }
 
-static void AppendRewriteSkips(std::vector<MaintainRow> &rows, const policy::TableHint &hint, const std::string &reason) {
+static void AppendRewriteSkips(std::vector<MaintainRow> &rows, const policy::TableHint &hint,
+                               const std::string &reason) {
 	if (hint.rewrite_steps.empty()) {
 		rows.push_back(MakeRow("rewrite", hint.schema_name, hint.table_name, "none", "skip",
 		                       static_cast<int64_t>(hint.file_count), 0, reason));
@@ -284,155 +285,159 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 	}
 
 	try {
-	for (const auto &diag : diagnostics) {
-		rows.push_back(MakeRow("inventory", diag.schema_name, diag.table_name, diag.source, "error", 0, 0, diag.message));
-	}
-	if (hints.empty()) {
-		if (diagnostics.empty()) {
-			rows.push_back(MakeRow("inventory", options.table.schema, options.table.table, "catalog_select", "skip", 0,
-			                       0, "no DuckLake tables matched"));
+		for (const auto &diag : diagnostics) {
+			rows.push_back(
+			    MakeRow("inventory", diag.schema_name, diag.table_name, diag.source, "error", 0, 0, diag.message));
 		}
-		return rows;
-	}
+		if (hints.empty()) {
+			if (diagnostics.empty()) {
+				rows.push_back(MakeRow("inventory", options.table.schema, options.table.table, "catalog_select", "skip",
+				                       0, 0, "no DuckLake tables matched"));
+			}
+			return rows;
+		}
 
-	rows.push_back(MakeRow("inventory", "", "", "catalog_select", "ok", static_cast<int64_t>(files.size()),
-	                       static_cast<int64_t>(hints.size()),
-	                       "byte-weighted adaptive rewrite ladder + merge size bands"));
-	if (!options_error.empty()) {
-		rows.push_back(MakeRow("catalog_options", "", "", "ducklake_options", "error", 0, 0, options_error));
-	}
-	if (!policy_error.empty()) {
-		rows.push_back(MakeRow("lakemon_policy", "", "", "persisted_overrides", "error", 0, 0, policy_error));
-	}
+		rows.push_back(MakeRow("inventory", "", "", "catalog_select", "ok", static_cast<int64_t>(files.size()),
+		                       static_cast<int64_t>(hints.size()),
+		                       "byte-weighted adaptive rewrite ladder + merge size bands"));
+		if (!options_error.empty()) {
+			rows.push_back(MakeRow("catalog_options", "", "", "ducklake_options", "error", 0, 0, options_error));
+		}
+		if (!policy_error.empty()) {
+			rows.push_back(MakeRow("lakemon_policy", "", "", "persisted_overrides", "error", 0, 0, policy_error));
+		}
 
-	const bool catalog_wide = options.table.table.empty();
-	const int64_t max_delete_files =
-	    GetInt64Setting(context, kFlushInlinedMaxDeleteFilesSetting, kDefaultFlushInlinedMaxDeleteFiles);
+		const bool catalog_wide = options.table.table.empty();
+		const int64_t max_delete_files =
+		    GetInt64Setting(context, kFlushInlinedMaxDeleteFilesSetting, kDefaultFlushInlinedMaxDeleteFiles);
 
-	// One flush CALL per live table (hints already carry inlined-delete stats
-	// from InventoryTables, including tables with only inlined inserts).
-	// Catalog-wide auto_compact=false skips flush the same way as rewrite/merge,
-	// so the delete-file guard is not reported.
-	for (const auto &hint : hints) {
-		TableRef ref;
-		ref.schema = hint.schema_name;
-		ref.table = hint.table_name;
-		const uint64_t planned = policy::PlannedFlushDeleteFiles(hint);
-		if (policy::SkipForAutoCompact(catalog_wide, hint.auto_compact)) {
-			rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name, "ducklake_flush_inlined_data",
-			                       "skip", static_cast<int64_t>(planned), 0, "auto_compact=false"));
-			continue;
-		}
-		if (!hint.inlined_delete_error.empty()) {
-			rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name, "ducklake_flush_inlined_data",
-			                       "error", static_cast<int64_t>(planned), 0,
-			                       policy::FormatFlushInlinedMeasureError(hint)));
-			continue;
-		}
-		const std::string details = policy::FormatFlushInlinedDetails(hint);
-		if (FlushInlinedExceedsLimit(planned, max_delete_files)) {
-			rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name, "ducklake_flush_inlined_data",
-			                       "skip", static_cast<int64_t>(planned), 0,
-			                       details + " | " + FlushInlinedSkipReason(planned, max_delete_files)));
-			continue;
-		}
-		AppendPlanned(rows, "flush_inlined", "ducklake_flush_inlined_data", FlushInlinedDataCall(options.catalog, ref),
-		              hint.schema_name, hint.table_name, details, static_cast<int64_t>(planned));
-	}
-
-	for (const auto &hint : hints) {
-		TableRef ref;
-		ref.schema = hint.schema_name;
-		ref.table = hint.table_name;
-		if (policy::SkipForAutoCompact(catalog_wide, hint.auto_compact)) {
-			AppendRewriteSkips(rows, hint, "auto_compact=false");
-			continue;
-		}
-		if (hint.rewrite_steps.empty()) {
-			AppendRewriteSkips(rows, hint, hint.rewrite_plan);
-			continue;
-		}
-		for (const auto &step : hint.rewrite_steps) {
-			if (!ShouldEmitRewriteCall(step.delete_threshold)) {
-				rows.push_back(MakeRow("rewrite", hint.schema_name, hint.table_name, step.band, "skip",
-				                       static_cast<int64_t>(step.files.size()), 0,
-				                       policy::FormatRewriteStepDetails(step) + " | " +
-				                           policy::kSkipNonPositiveRewriteThreshold));
+		// One flush CALL per live table (hints already carry inlined-delete stats
+		// from InventoryTables, including tables with only inlined inserts).
+		// Catalog-wide auto_compact=false skips flush the same way as rewrite/merge,
+		// so the delete-file guard is not reported.
+		for (const auto &hint : hints) {
+			TableRef ref;
+			ref.schema = hint.schema_name;
+			ref.table = hint.table_name;
+			const uint64_t planned = policy::PlannedFlushDeleteFiles(hint);
+			if (policy::SkipForAutoCompact(catalog_wide, hint.auto_compact)) {
+				rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name,
+				                       "ducklake_flush_inlined_data", "skip", static_cast<int64_t>(planned), 0,
+				                       "auto_compact=false"));
 				continue;
 			}
-			AppendPlanned(rows, "rewrite", step.band,
-			              RewriteDataFilesCall(options.catalog, ref, step.delete_threshold), hint.schema_name,
-			              hint.table_name, policy::FormatRewriteStepDetails(step),
-			              static_cast<int64_t>(step.files.size()), step.planned_bytes);
+			if (!hint.inlined_delete_error.empty()) {
+				rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name,
+				                       "ducklake_flush_inlined_data", "error", static_cast<int64_t>(planned), 0,
+				                       policy::FormatFlushInlinedMeasureError(hint)));
+				continue;
+			}
+			const std::string details = policy::FormatFlushInlinedDetails(hint);
+			if (FlushInlinedExceedsLimit(planned, max_delete_files)) {
+				rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name,
+				                       "ducklake_flush_inlined_data", "skip", static_cast<int64_t>(planned), 0,
+				                       details + " | " + FlushInlinedSkipReason(planned, max_delete_files)));
+				continue;
+			}
+			AppendPlanned(rows, "flush_inlined", "ducklake_flush_inlined_data",
+			              FlushInlinedDataCall(options.catalog, ref), hint.schema_name, hint.table_name, details,
+			              static_cast<int64_t>(planned));
 		}
-	}
 
-	for (const auto &hint : hints) {
-		TableRef ref;
-		ref.schema = hint.schema_name;
-		ref.table = hint.table_name;
-		std::vector<policy::FileStat> table_files;
-		for (const auto &file : files) {
-			if (file.schema_name == hint.schema_name && file.table_name == hint.table_name) {
-				table_files.push_back(file);
+		for (const auto &hint : hints) {
+			TableRef ref;
+			ref.schema = hint.schema_name;
+			ref.table = hint.table_name;
+			if (policy::SkipForAutoCompact(catalog_wide, hint.auto_compact)) {
+				AppendRewriteSkips(rows, hint, "auto_compact=false");
+				continue;
+			}
+			if (hint.rewrite_steps.empty()) {
+				AppendRewriteSkips(rows, hint, hint.rewrite_plan);
+				continue;
+			}
+			for (const auto &step : hint.rewrite_steps) {
+				if (!ShouldEmitRewriteCall(step.delete_threshold)) {
+					rows.push_back(MakeRow("rewrite", hint.schema_name, hint.table_name, step.band, "skip",
+					                       static_cast<int64_t>(step.files.size()), 0,
+					                       policy::FormatRewriteStepDetails(step) + " | " +
+					                           policy::kSkipNonPositiveRewriteThreshold));
+					continue;
+				}
+				AppendPlanned(rows, "rewrite", step.band,
+				              RewriteDataFilesCall(options.catalog, ref, step.delete_threshold), hint.schema_name,
+				              hint.table_name, policy::FormatRewriteStepDetails(step),
+				              static_cast<int64_t>(step.files.size()), step.planned_bytes);
 			}
 		}
-		if (policy::SkipForAutoCompact(catalog_wide, hint.auto_compact)) {
-			rows.push_back(MakeRow("merge", hint.schema_name, hint.table_name, "auto_compact", "skip",
-			                       static_cast<int64_t>(hint.file_count), 0, "auto_compact=false"));
-			continue;
-		}
-		for (const auto &tier : active.tiers) {
-			uint64_t candidates = 0;
-			uint64_t candidate_bytes = 0;
-			for (const auto &file : table_files) {
-				if (policy::FileQualifiesForMergeTier(file, tier)) {
-					candidates++;
-					candidate_bytes += file.file_size_bytes;
+
+		for (const auto &hint : hints) {
+			TableRef ref;
+			ref.schema = hint.schema_name;
+			ref.table = hint.table_name;
+			std::vector<policy::FileStat> table_files;
+			for (const auto &file : files) {
+				if (file.schema_name == hint.schema_name && file.table_name == hint.table_name) {
+					table_files.push_back(file);
 				}
 			}
-			if (candidates < 2) {
-				rows.push_back(MakeRow("merge", hint.schema_name, hint.table_name, std::string("tier_") + tier.name,
-				                       "skip", static_cast<int64_t>(candidates), 0, "need at least two files in band"));
+			if (policy::SkipForAutoCompact(catalog_wide, hint.auto_compact)) {
+				rows.push_back(MakeRow("merge", hint.schema_name, hint.table_name, "auto_compact", "skip",
+				                       static_cast<int64_t>(hint.file_count), 0, "auto_compact=false"));
 				continue;
 			}
-			const int64_t cap =
-			    options.max_compacted_files > 0 ? options.max_compacted_files : static_cast<int64_t>(tier.max_compacted_files);
-			const std::string target = policy::EffectiveTargetFileSize(
-			    policy::ResolveOption(catalog_options, "target_file_size", hint.schema_name, hint.table_name),
-			    tier.target_file_size.c_str());
-			const bool catalog_target = !hint.target_file_size.empty();
-			if (!catalog_target) {
-				std::ostringstream sql;
-				sql << "CALL ducklake_set_option(" << QuoteString(options.catalog) << ", 'target_file_size', "
-				    << QuoteString(target) << ")";
-				AppendPlanned(rows, "merge", std::string("set_target_") + tier.name, sql.str(), hint.schema_name,
-				              hint.table_name, sql.str());
+			for (const auto &tier : active.tiers) {
+				uint64_t candidates = 0;
+				uint64_t candidate_bytes = 0;
+				for (const auto &file : table_files) {
+					if (policy::FileQualifiesForMergeTier(file, tier)) {
+						candidates++;
+						candidate_bytes += file.file_size_bytes;
+					}
+				}
+				if (candidates < 2) {
+					rows.push_back(MakeRow("merge", hint.schema_name, hint.table_name, std::string("tier_") + tier.name,
+					                       "skip", static_cast<int64_t>(candidates), 0,
+					                       "need at least two files in band"));
+					continue;
+				}
+				const int64_t cap = options.max_compacted_files > 0 ? options.max_compacted_files
+				                                                    : static_cast<int64_t>(tier.max_compacted_files);
+				const std::string target = policy::EffectiveTargetFileSize(
+				    policy::ResolveOption(catalog_options, "target_file_size", hint.schema_name, hint.table_name),
+				    tier.target_file_size.c_str());
+				const bool catalog_target = !hint.target_file_size.empty();
+				if (!catalog_target) {
+					std::ostringstream sql;
+					sql << "CALL ducklake_set_option(" << QuoteString(options.catalog) << ", 'target_file_size', "
+					    << QuoteString(target) << ")";
+					AppendPlanned(rows, "merge", std::string("set_target_") + tier.name, sql.str(), hint.schema_name,
+					              hint.table_name, sql.str());
+				}
+				std::ostringstream merge_sql;
+				merge_sql << "CALL ducklake_merge_adjacent_files(" << QuoteString(options.catalog) << TableArg(ref)
+				          << SchemaNamed(ref) << ", min_file_size => " << tier.min_file_size << ", max_file_size => "
+				          << tier.max_file_size << ", max_compacted_files => " << cap << ")";
+				AppendPlanned(rows, "merge", std::string("tier_") + tier.name, merge_sql.str(), hint.schema_name,
+				              hint.table_name,
+				              std::string("band ") + std::to_string(tier.min_file_size) + "-" +
+				                  std::to_string(tier.max_file_size) + " -> " + target,
+				              static_cast<int64_t>(candidates), candidate_bytes);
 			}
-			std::ostringstream merge_sql;
-			merge_sql << "CALL ducklake_merge_adjacent_files(" << QuoteString(options.catalog) << TableArg(ref)
-			          << SchemaNamed(ref) << ", min_file_size => " << tier.min_file_size
-			          << ", max_file_size => " << tier.max_file_size << ", max_compacted_files => " << cap << ")";
-			AppendPlanned(rows, "merge", std::string("tier_") + tier.name, merge_sql.str(), hint.schema_name,
-			              hint.table_name,
-			              std::string("band ") + std::to_string(tier.min_file_size) + "-" +
-			                  std::to_string(tier.max_file_size) + " -> " + target,
-			              static_cast<int64_t>(candidates), candidate_bytes);
 		}
-	}
 
-	return rows;
+		return rows;
 	} catch (const duckdb::InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {
 		throw;
 	} catch (const Exception &ex) {
-		rows.push_back(MakeRow("maintain", options.table.schema, options.table.table, "orchestrate", "error", 0, 0,
-		                       SafeWhat(ex)));
+		rows.push_back(
+		    MakeRow("maintain", options.table.schema, options.table.table, "orchestrate", "error", 0, 0, SafeWhat(ex)));
 		return rows;
 	} catch (const std::exception &ex) {
-		rows.push_back(MakeRow("maintain", options.table.schema, options.table.table, "orchestrate", "error", 0, 0,
-		                       SafeWhat(ex)));
+		rows.push_back(
+		    MakeRow("maintain", options.table.schema, options.table.table, "orchestrate", "error", 0, 0, SafeWhat(ex)));
 		return rows;
 	}
 }
@@ -461,18 +466,18 @@ std::vector<MaintainRow> RunGlobalMaintain(duckdb::ClientContext &context, const
 			rows.push_back(MakeRow("catalog_options", "", "", "ducklake_options", "error", 0, 0, options_error));
 		}
 
-		const std::string expire_interval = policy::EffectiveInterval(
-		    options.expire_older_than_set, options.expire_older_than,
-		    policy::ResolveOption(catalog_options, "expire_older_than", "", ""));
-		const std::string delete_interval = policy::EffectiveInterval(
-		    options.delete_older_than_set, options.delete_older_than,
-		    policy::ResolveOption(catalog_options, "delete_older_than", "", ""));
+		const std::string expire_interval =
+		    policy::EffectiveInterval(options.expire_older_than_set, options.expire_older_than,
+		                              policy::ResolveOption(catalog_options, "expire_older_than", "", ""));
+		const std::string delete_interval =
+		    policy::EffectiveInterval(options.delete_older_than_set, options.delete_older_than,
+		                              policy::ResolveOption(catalog_options, "delete_older_than", "", ""));
 
 		if (const char *skip = ExpireSkipReason(options.skip_expire, expire_interval.empty())) {
 			rows.push_back(MakeRow("expire_snapshots", "", "", "expire", "skip", 0, 0, skip));
 		} else {
-			AppendPlanned(rows, "expire_snapshots", "expire", ExpireSnapshotsCall(options.catalog, expire_interval),
-			              "", "", "older_than=" + expire_interval);
+			AppendPlanned(rows, "expire_snapshots", "expire", ExpireSnapshotsCall(options.catalog, expire_interval), "",
+			              "", "older_than=" + expire_interval);
 		}
 
 		if (!ShouldRunCleanup(options.skip_cleanup)) {

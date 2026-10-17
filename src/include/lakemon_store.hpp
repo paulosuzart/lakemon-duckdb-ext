@@ -16,8 +16,8 @@ namespace lakemon {
 
 void EnsurePolicyStore(duckdb::ClientContext &context);
 
-std::vector<policy::StoredPolicyRow> LoadStoredPolicyRows(duckdb::ClientContext &context,
-                                                          const std::string &catalog, std::string *error_out);
+std::vector<policy::StoredPolicyRow> LoadStoredPolicyRows(duckdb::ClientContext &context, const std::string &catalog,
+                                                          std::string *error_out);
 
 policy::ActivePolicy LoadActivePolicy(duckdb::ClientContext &context, const std::string &catalog,
                                       std::string *error_out);

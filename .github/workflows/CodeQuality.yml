@@ -1,0 +1,128 @@
+#
+# clang-format + clang-tidy on src/ (including src/include).
+# Findings make the check step yellow (continue-on-error) and are written
+# to the log, step summary, and annotations. The gate step fails the job
+# when the matching ADVISORY flag is false.
+#
+# format-check is blocking. tidy-check is blocking while findings stay at 0.
+# Flip TIDY_CHECK_ADVISORY back to "true" if a later change reintroduces
+# findings that need a category-by-category cleanup.
+#
+# format-check: clang-format 11.0.1 (DuckDB scripts/format.py / CodeQuality.yml).
+# tidy-check: CMake configure only (CMAKE_EXPORT_COMPILE_COMMANDS / CLANG_TIDY=1,
+# DISABLE_UNITY=1) to get compile_commands.json — no DuckDB compile/link.
+#
+name: Code quality
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}
+  cancel-in-progress: true
+
+env:
+  # Set to "true" to keep the matching check advisory (job green on findings).
+  FORMAT_CHECK_ADVISORY: "false"
+  TIDY_CHECK_ADVISORY: "false"
+
+jobs:
+  format-check:
+    name: Format check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Init duckdb submodule
+        shell: bash
+        run: git submodule update --init --depth 1 duckdb
+
+      - name: Install clang-format 11.0.1
+        shell: bash
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq clang-format-11
+          sudo pip3 install 'clang_format==11.0.1'
+          clang-format --version
+
+      - name: Verify format toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f duckdb/.clang-format
+          test -f .clang-format
+          test "$(readlink .clang-format)" = "duckdb/.clang-format"
+          clang-format --version | grep -F '11.'
+          test -d src
+
+      - name: Format check
+        id: format
+        # Always yellow-on-findings; the gate below fails the job when not advisory.
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/format-check.sh
+
+      - name: Gate format check
+        if: ${{ env.FORMAT_CHECK_ADVISORY != 'true' && steps.format.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "FORMAT_CHECK_ADVISORY is false; format findings fail the job."
+          exit 1
+
+  tidy-check:
+    name: Tidy check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Init duckdb submodule
+        shell: bash
+        run: git submodule update --init --depth 1 duckdb
+
+      - name: Install clang-tidy
+        shell: bash
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq clang-tidy cmake ninja-build build-essential g++
+          clang-tidy --version | head -n 1
+          cmake --version | head -n 1
+          g++ --version | head -n 1
+
+      - name: Configure compile_commands.json
+        shell: bash
+        run: bash .github/scripts/tidy-configure.sh
+
+      - name: Verify tidy toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f duckdb/.clang-tidy
+          test -f .clang-tidy
+          test "$(readlink .clang-tidy)" = "duckdb/.clang-tidy"
+          command -v clang-tidy
+          test -f build/tidy/compile_commands.json
+
+      - name: Tidy check
+        id: tidy
+        # Always yellow-on-findings; the gate below fails the job when not advisory.
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/tidy-check.sh
+
+      - name: Gate tidy check
+        if: ${{ env.TIDY_CHECK_ADVISORY != 'true' && steps.tidy.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "TIDY_CHECK_ADVISORY is false; tidy findings fail the job."
+          exit 1

@@ -91,8 +91,7 @@ static void EmitRows(ClientContext &, TableFunctionInput &input, DataChunk &outp
 // Negative = unknown. CALL / SELECT execute in bind_replace, so this path
 // only emits already-finished rows and would jump 0 → 100. Stderr step
 // lines carry the byte-weighted fraction instead.
-static double MaintainScanProgress(ClientContext &, const FunctionData *,
-                                   const GlobalTableFunctionState *) {
+static double MaintainScanProgress(ClientContext &, const FunctionData *, const GlobalTableFunctionState *) {
 	return -1;
 }
 
@@ -172,8 +171,8 @@ static void MaintainReturnTypes(vector<LogicalType> &return_types, lakemon::Colu
 static void FillMaintainRows(RowState &state, const std::vector<lakemon::MaintainRow> &rows) {
 	for (auto &row : rows) {
 		state.rows.push_back({Value(row.step), Value(row.schema_name), Value(row.table_name), Value(row.action),
-		                       Value(row.status), Value::BIGINT(row.files_processed), Value::BIGINT(row.files_created),
-		                       Value(row.details)});
+		                      Value(row.status), Value::BIGINT(row.files_processed), Value::BIGINT(row.files_created),
+		                      Value(row.details)});
 	}
 }
 
@@ -448,7 +447,7 @@ static unique_ptr<FunctionData> StatsBind(ClientContext &, TableFunctionBindInpu
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT,
 	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT, LogicalType::BIGINT,
 	                LogicalType::DOUBLE,  LogicalType::VARCHAR, LogicalType::DOUBLE, LogicalType::VARCHAR,
-	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::BIGINT,  LogicalType::BIGINT,
+	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::BIGINT, LogicalType::BIGINT,
 	                LogicalType::BIGINT};
 	return std::move(data);
 }
@@ -469,17 +468,18 @@ static unique_ptr<GlobalTableFunctionState> StatsInit(ClientContext &context, Ta
 		throw InvalidInputException("lakemon: %s", lakemon::SafeWhat(ex));
 	}
 	for (auto &hint : hints) {
-		state->rows.push_back({Value(hint.schema_name), Value(hint.table_name), Value::BIGINT(static_cast<int64_t>(hint.file_count)),
-		                       Value::BIGINT(static_cast<int64_t>(hint.file_size_bytes)),
-		                       Value::BIGINT(static_cast<int64_t>(hint.delete_file_count)),
-		                       Value::BIGINT(static_cast<int64_t>(hint.delete_file_size_bytes)),
-		                       Value::BIGINT(static_cast<int64_t>(hint.delete_count)),
-		                       Value::BIGINT(static_cast<int64_t>(hint.deleted_bytes_weighted)), Value(hint.delete_ratio),
-		                       Value(hint.rewrite_plan), Value(hint.rewrite_threshold), Value(hint.merge_tier_hint),
-		                       Value(hint.target_file_size), Value::BOOLEAN(hint.auto_compact),
-		                       Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_rows)),
-		                       Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_files_active)),
-		                       Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_files_ended))});
+		state->rows.push_back(
+		    {Value(hint.schema_name), Value(hint.table_name), Value::BIGINT(static_cast<int64_t>(hint.file_count)),
+		     Value::BIGINT(static_cast<int64_t>(hint.file_size_bytes)),
+		     Value::BIGINT(static_cast<int64_t>(hint.delete_file_count)),
+		     Value::BIGINT(static_cast<int64_t>(hint.delete_file_size_bytes)),
+		     Value::BIGINT(static_cast<int64_t>(hint.delete_count)),
+		     Value::BIGINT(static_cast<int64_t>(hint.deleted_bytes_weighted)), Value(hint.delete_ratio),
+		     Value(hint.rewrite_plan), Value(hint.rewrite_threshold), Value(hint.merge_tier_hint),
+		     Value(hint.target_file_size), Value::BOOLEAN(hint.auto_compact),
+		     Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_rows)),
+		     Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_files_active)),
+		     Value::BIGINT(static_cast<int64_t>(hint.inlined_delete_files_ended))});
 	}
 	return std::move(state);
 }
@@ -500,8 +500,8 @@ static void EmitPolicy(RowState &state, const lakemon::policy::ActivePolicy &pol
 	    lakemon::policy::PolicyKeyOverridden(policy, lakemon::policy::kKindRewriteLadder, lakemon::policy::kLadderName)
 	        ? lakemon::policy::kSourceOverride
 	        : lakemon::policy::kSourceDefault;
-	state.rows.push_back({Value(lakemon::policy::kKindRewriteLadder), Value(lakemon::policy::kLadderName),
-	                      Value("1"), Value(std::to_string(policy.rewrite.max_rewrite_steps)), Value("data-driven"),
+	state.rows.push_back({Value(lakemon::policy::kKindRewriteLadder), Value(lakemon::policy::kLadderName), Value("1"),
+	                      Value(std::to_string(policy.rewrite.max_rewrite_steps)), Value("data-driven"),
 	                      Value(lakemon::policy::FormatRewriteLadderNotes(policy.rewrite)), Value(source)});
 	for (const auto &tier : policy.tiers) {
 		const char *source = lakemon::policy::PolicyKeyOverridden(policy, lakemon::policy::kKindMergeTier, tier.name)
@@ -541,8 +541,8 @@ static unique_ptr<GlobalTableFunctionState> PolicyInit(ClientContext &context, T
 		const auto policy = lakemon::LoadActivePolicy(context, bind.catalog, &error);
 		EmitPolicy(*state, policy, flush_max);
 		if (!error.empty()) {
-			state->rows.push_back({Value("error"), Value(""), Value(""), Value(""), Value(""), Value(error),
-			                       Value("error")});
+			state->rows.push_back(
+			    {Value("error"), Value(""), Value(""), Value(""), Value(""), Value(error), Value("error")});
 		}
 	} catch (const InterruptException &) {
 		throw;
@@ -697,34 +697,34 @@ static void VersionFun(DataChunk &, ExpressionState &, Vector &result) {
 template <typename FunctionT>
 static void AddNamedMaintainParams(FunctionT &function) {
 	lakemon::AddNamedParameters(function, {
-	    {"dry_run", LogicalType::BOOLEAN},
-	    {"max_compacted_files", LogicalType::BIGINT},
-	});
+	                                          {"dry_run", LogicalType::BOOLEAN},
+	                                          {"max_compacted_files", LogicalType::BIGINT},
+	                                      });
 }
 
 template <typename FunctionT>
 static void AddNamedGlobalMaintainParams(FunctionT &function) {
 	lakemon::AddNamedParameters(function, {
-	    {"dry_run", LogicalType::BOOLEAN},
-	    {"skip_expire", LogicalType::BOOLEAN},
-	    {"skip_cleanup", LogicalType::BOOLEAN},
-	    {"expire_older_than", LogicalType::VARCHAR},
-	    {"delete_older_than", LogicalType::VARCHAR},
-	});
+	                                          {"dry_run", LogicalType::BOOLEAN},
+	                                          {"skip_expire", LogicalType::BOOLEAN},
+	                                          {"skip_cleanup", LogicalType::BOOLEAN},
+	                                          {"expire_older_than", LogicalType::VARCHAR},
+	                                          {"delete_older_than", LogicalType::VARCHAR},
+	                                      });
 }
 
 static void AddNamedSetPolicyParams(TableFunction &function) {
 	lakemon::AddNamedParameters(function, {
-	    {"reset", LogicalType::BOOLEAN},
-	    {"reset_all", LogicalType::BOOLEAN},
-	    {"byte_budget", LogicalType::BIGINT},
-	    {"max_rewrite_steps", LogicalType::BIGINT},
-	    {"min_delete_ratio", LogicalType::DOUBLE},
-	    {"min_file_size", LogicalType::BIGINT},
-	    {"max_file_size", LogicalType::BIGINT},
-	    {"target_file_size", LogicalType::VARCHAR},
-	    {"max_compacted_files", LogicalType::BIGINT},
-	});
+	                                          {"reset", LogicalType::BOOLEAN},
+	                                          {"reset_all", LogicalType::BOOLEAN},
+	                                          {"byte_budget", LogicalType::BIGINT},
+	                                          {"max_rewrite_steps", LogicalType::BIGINT},
+	                                          {"min_delete_ratio", LogicalType::DOUBLE},
+	                                          {"min_file_size", LogicalType::BIGINT},
+	                                          {"max_file_size", LogicalType::BIGINT},
+	                                          {"target_file_size", LogicalType::VARCHAR},
+	                                          {"max_compacted_files", LogicalType::BIGINT},
+	                                      });
 }
 
 } // namespace
@@ -771,8 +771,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	TableFunction set_one({LogicalType::VARCHAR}, EmitRows, SetPolicyBind, SetPolicyInit);
 	AddNamedSetPolicyParams(set_one);
 	set_policy.AddFunction(set_one);
-	TableFunction set_three({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, EmitRows,
-	                        SetPolicyBind, SetPolicyInit);
+	TableFunction set_three({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, EmitRows, SetPolicyBind,
+	                        SetPolicyInit);
 	AddNamedSetPolicyParams(set_three);
 	set_policy.AddFunction(set_three);
 	loader.RegisterFunction(set_policy);
@@ -788,7 +788,7 @@ void LoadInternal(ExtensionLoader &loader) {
 	AddNamedMaintainParams(maintain_pragma_one);
 	maintain_pragma.AddFunction(maintain_pragma_one);
 	auto maintain_pragma_two = PragmaFunction::PragmaCall("lakemon_maintain", MaintainPragmaQuery,
-	                                                     {LogicalType::VARCHAR, LogicalType::VARCHAR});
+	                                                      {LogicalType::VARCHAR, LogicalType::VARCHAR});
 	AddNamedMaintainParams(maintain_pragma_two);
 	maintain_pragma.AddFunction(maintain_pragma_two);
 	loader.RegisterFunction(maintain_pragma);
