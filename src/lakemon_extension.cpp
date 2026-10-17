@@ -244,7 +244,7 @@ static unique_ptr<TableRef> MaintainBindReplace(ClientContext &context, TableFun
 	}
 
 	if (!options.dry_run) {
-		lakemon::ExecutePlannedRows(context, rows, options.catalog);
+		lakemon::ExecutePlannedRows(context, rows);
 	}
 	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
 	ref->alias = input.ref.alias;
@@ -286,7 +286,7 @@ static unique_ptr<TableRef> GlobalMaintainBindReplace(ClientContext &context, Ta
 	}
 
 	if (!options.dry_run) {
-		lakemon::ExecutePlannedRows(context, rows, options.catalog);
+		lakemon::ExecutePlannedRows(context, rows);
 	}
 	auto ref = ParseSelectAsSubquery(context, lakemon::BindReplaceQuery(rows, false));
 	ref->alias = input.ref.alias;
@@ -388,7 +388,7 @@ static string MaintainPragmaQuery(ClientContext &context, const FunctionParamete
 		}
 		auto rows = lakemon::RunMaintain(context, options);
 		if (!options.dry_run) {
-			lakemon::ExecutePlannedRows(context, rows, options.catalog);
+			lakemon::ExecutePlannedRows(context, rows);
 		}
 		return lakemon::BindReplaceQuery(rows, false);
 	} catch (const InterruptException &) {
@@ -412,7 +412,7 @@ static string GlobalMaintainPragmaQuery(ClientContext &context, const FunctionPa
 		}
 		auto rows = lakemon::RunGlobalMaintain(context, options);
 		if (!options.dry_run) {
-			lakemon::ExecutePlannedRows(context, rows, options.catalog);
+			lakemon::ExecutePlannedRows(context, rows);
 		}
 		return lakemon::BindReplaceQuery(rows, false);
 	} catch (const InterruptException &) {

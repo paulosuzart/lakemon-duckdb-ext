@@ -71,8 +71,7 @@ void RequireMaintainExecute(duckdb::ClientContext &context, bool has_prepared_pa
 // sets files_created from the CALL result row count. Interrupt rethrows so
 // the result rows are not returned; already-committed steps stay committed.
 // Logs start/end (step, table, duration, files, error, progress) to DuckDB
-// logging and optionally stderr. Applies lakemon_catalog_lock_timeout when set.
-void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows,
-                        const std::string &catalog = "");
+// logging and optionally stderr.
+void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows);
 
 } // namespace lakemon

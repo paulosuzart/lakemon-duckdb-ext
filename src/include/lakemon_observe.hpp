@@ -1,10 +1,7 @@
-// Maintain observability helpers (log lines, lock-timeout SQL, error hints).
+// Maintain observability helpers (log lines, catalog-lock error hints).
 // Header-only so policy-test can cover the public text without DuckDB.
 #pragma once
 
-#include "lakemon_sql.hpp"
-
-#include <cctype>
 #include <cstdint>
 #include <sstream>
 #include <string>
@@ -12,7 +9,6 @@
 namespace lakemon {
 
 static constexpr const char *kLogStderrSetting = "lakemon_log_stderr";
-static constexpr const char *kCatalogLockTimeoutSetting = "lakemon_catalog_lock_timeout";
 static constexpr const char *kLakemonLogTypeName = "lakemon";
 
 static constexpr const char *kCatalogLockHint =
@@ -20,55 +16,6 @@ static constexpr const char *kCatalogLockHint =
     "(another DuckDB session may be holding the catalog). "
     "Commit or disconnect the other session, or put options=-c lock_timeout=30s "
     "on the Postgres ATTACH string so the wait fails fast.";
-
-inline bool IsSafeTimeoutLiteral(const std::string &value, std::string &error) {
-	if (value.empty()) {
-		error.clear();
-		return true;
-	}
-	if (value.size() > 32) {
-		error = "lakemon: lakemon_catalog_lock_timeout is too long";
-		return false;
-	}
-	if (!std::isdigit(static_cast<unsigned char>(value[0]))) {
-		error = "lakemon: lakemon_catalog_lock_timeout must start with a digit (for example 30s)";
-		return false;
-	}
-	for (size_t i = 0; i < value.size(); i++) {
-		const unsigned char c = static_cast<unsigned char>(value[i]);
-		if (!std::isalnum(c)) {
-			error = "lakemon: lakemon_catalog_lock_timeout must be a Postgres duration "
-			        "such as 15s, 30s, or 2min";
-			return false;
-		}
-	}
-	error.clear();
-	return true;
-}
-
-inline std::string PostgresLockTimeoutSQL(const std::string &timeout) {
-	return "SET lock_timeout = " + QuoteString(timeout);
-}
-
-// Restore the session default after maintain (does not force wait-forever).
-inline std::string PostgresResetLockTimeoutSQL() {
-	return "RESET lock_timeout";
-}
-
-static constexpr const char *kTimeoutNotApplied =
-    "lakemon: lakemon_catalog_lock_timeout was not applied on the maintain "
-    "postgres_scanner session (postgres_execute / postgres_query failed). "
-    "DuckLake catalog commit uses its own PGconn and may still wait. Put "
-    "options=-c lock_timeout=30s on the Postgres ATTACH string, or disconnect "
-    "the other session.";
-
-inline std::string PostgresExecuteCall(const std::string &attached, const std::string &sql) {
-	return "CALL postgres_execute(" + QuoteString(attached) + ", " + QuoteString(sql) + ")";
-}
-
-inline std::string PostgresQueryCall(const std::string &attached, const std::string &sql) {
-	return "SELECT * FROM postgres_query(" + QuoteString(attached) + ", " + QuoteString(sql) + ")";
-}
 
 inline bool LooksLikeCatalogLockWait(const std::string &message) {
 	if (message.find("lock timeout") != std::string::npos) {

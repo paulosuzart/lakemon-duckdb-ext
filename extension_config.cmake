@@ -1,7 +1,7 @@
 # Included by DuckDB's build system. It specifies which extension to load.
 # Extension version: 0.1.1 (lakemon_version / LakemonExtension::Version fallback).
-# Maintain logs, table_scan_progress, and catalog lock_timeout use core DuckDB
-# APIs only — do not add extra extensions here for that path.
+# Maintain logs and table_scan_progress use core DuckDB APIs only —
+# do not add extra extensions here for that path.
 
 duckdb_extension_load(lakemon
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}

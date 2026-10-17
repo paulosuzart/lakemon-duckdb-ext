@@ -1,7 +1,6 @@
 #include "expect.hpp"
 #include "lakemon_observe.hpp"
 #include "lakemon_progress.hpp"
-#include "lakemon_sql.hpp"
 
 #include <iostream>
 #include <string>
@@ -39,34 +38,6 @@ static void TestByteWeightedProgressMatchesRewriteBias() {
 	Expect(rewrite > flush * 100, "byte-weighted rewrite dominates flush");
 	Expect(lakemon::ProgressFraction(flush, total) < 0.01, "flush alone is a tiny fraction");
 	Expect(lakemon::ProgressFraction(flush + rewrite, total) == 1.0, "flush + rewrite completes");
-}
-
-static void TestTimeoutLiteralAndSQL() {
-	std::string error;
-	Expect(lakemon::IsSafeTimeoutLiteral("", error), "empty disables the setting");
-	Expect(lakemon::IsSafeTimeoutLiteral("30s", error), "30s is valid");
-	Expect(lakemon::IsSafeTimeoutLiteral("15s", error), "15s is valid");
-	Expect(lakemon::IsSafeTimeoutLiteral("2min", error), "2min is valid");
-	Expect(lakemon::IsSafeTimeoutLiteral("15000", error), "milliseconds as digits are valid");
-	Expect(!lakemon::IsSafeTimeoutLiteral("30s;drop", error), "rejects extra characters");
-	Expect(Contains(error, "duration"), "invalid literal names duration");
-	Expect(!lakemon::IsSafeTimeoutLiteral("'30s'", error), "rejects quotes");
-	Expect(!lakemon::IsSafeTimeoutLiteral("s30", error), "must start with a digit");
-
-	Expect(lakemon::PostgresLockTimeoutSQL("30s") == "SET lock_timeout = '30s'",
-	       "Postgres lock_timeout assignment");
-	Expect(lakemon::PostgresResetLockTimeoutSQL() == "RESET lock_timeout",
-	       "RESET restores the session default");
-	Expect(Contains(lakemon::kTimeoutNotApplied, "was not applied"),
-	       "apply-failure text is stable");
-	Expect(lakemon::PostgresExecuteCall("__ducklake_metadata_lake", "SET lock_timeout = '30s'") ==
-	           "CALL postgres_execute('__ducklake_metadata_lake', 'SET lock_timeout = ''30s''')",
-	           "postgres_execute quotes the SET");
-	Expect(Contains(lakemon::PostgresQueryCall("__ducklake_metadata_lake", "SET lock_timeout = '30s'"),
-	                "postgres_query"),
-	       "postgres_query fallback is generated");
-	Expect(lakemon::MetadataCatalog("lake") == "__ducklake_metadata_lake",
-	       "DuckLake metadata catalog name");
 }
 
 static void TestCatalogLockErrorHint() {
@@ -113,7 +84,6 @@ int main() {
 	TestStepWeightPrefersBytesThenFiles();
 	TestProgressFractionAndPercent();
 	TestByteWeightedProgressMatchesRewriteBias();
-	TestTimeoutLiteralAndSQL();
 	TestCatalogLockErrorHint();
 	TestStepLogLineIsParseable();
 	if (TestFailures()) {

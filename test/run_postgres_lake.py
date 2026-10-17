@@ -134,8 +134,7 @@ class LakeSession:
 		self.last_stderr = ""
 		self.last_stdout = ""
 		# libpq startup options, no spaces (e.g. -clock_timeout=5s). Applied to
-		# DuckLake's catalog PGconn at ATTACH. postgres_execute SET lock_timeout
-		# does not reach that commit session.
+		# DuckLake's catalog connection at ATTACH.
 		self.pg_options = ""
 
 	def preamble(self) -> str:
@@ -539,7 +538,6 @@ def execute_maintain(session: LakeSession, timeout: int) -> None:
 	rows = session.query_rows(
 		f"""
 		SET lakemon_log_stderr = true;
-		SET lakemon_catalog_lock_timeout = '30s';
 		SELECT step, action, status, files_created FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false);
 		""",
 		timeout=timeout,
@@ -657,7 +655,6 @@ def execute_heavy_maintain(session: LakeSession, timeout: int, pg: str) -> None:
 		maintain_rows = session.query_rows(
 			f"""
 			SET lakemon_log_stderr = true;
-			SET lakemon_catalog_lock_timeout = '30s';
 			SELECT step, action, status, files_created
 			FROM lakemon_maintain('{CATALOG}', '{HEAVY_QUALIFIED}', dry_run => false);
 			""",
@@ -694,7 +691,7 @@ def wait_until(timeout_s: float, label: str, fn, required: bool = True, interval
 def hold_psql_lock(pg: str, relations: list[str], mode: str = "EXCLUSIVE") -> subprocess.Popen:
 	# EXCLUSIVE blocks INSERT/UPDATE (catalog commit) but not SELECT (inventory).
 	# ACCESS EXCLUSIVE would also stall inventory, which uses a different
-	# Connection and does not receive lakemon_catalog_lock_timeout.
+	# Connection and has no ATTACH lock_timeout.
 	if not relations:
 		raise Failed("no Postgres relations to lock")
 	locks = "\n".join(f"LOCK TABLE {relation} IN {mode} MODE;" for relation in relations)
@@ -829,7 +826,6 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 		rows, err, elapsed = run_maintain_capture(
 			session,
 			f"""
-			SET lakemon_catalog_lock_timeout = '10s';
 			SET lakemon_log_stderr = true;
 			SELECT step, status, details FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false)
 			WHERE step = 'flush_inlined';
@@ -889,10 +885,8 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 		raise Failed(f"contention seed expected at least 2 files, got {contention_files}")
 	# Hold the lock only after the seed commits.
 
-	# DuckLake commit uses its own PGconn. SET lock_timeout via
-	# postgres_execute on __ducklake_metadata_* does not reach it (CI hung
-	# 25s with ExclusiveLock held and lakemon_catalog_lock_timeout applied).
-	# Fail-fast is libpq options=-c lock_timeout on ATTACH. Do not ALTER DATABASE.
+	# DuckLake commit uses its own PGconn. Fail-fast is libpq
+	# options=-c lock_timeout on ATTACH. Do not ALTER DATABASE.
 	locked_session = LakeSession(session.duckdb, session.pg, session.data_path, session.loads)
 	locked_session.inlining_row_limit = 0
 	locked_session.pg_options = "-clock_timeout=5s"
@@ -908,7 +902,6 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 		rows, err, elapsed = run_maintain_capture(
 			locked_session,
 			f"""
-			SET lakemon_catalog_lock_timeout = '5s';
 			SET lakemon_log_stderr = true;
 			SELECT step, action, status, details FROM lakemon_maintain('{CATALOG}', '{QUALIFIED}', dry_run => false);
 			""",

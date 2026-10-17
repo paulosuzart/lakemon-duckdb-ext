@@ -161,92 +161,13 @@ static void EmitStepLog(duckdb::ClientContext &context, bool start, const Mainta
 	}
 }
 
-struct CatalogLockTimeout {
-	bool requested = false;
-	bool applied = false;
-	std::string note;
-	std::string attached;
-};
-
-static void EmitOperatorNote(duckdb::ClientContext &context, const std::string &note) {
-	if (note.empty()) {
-		return;
-	}
-	WriteLakemonLog(context, note);
-	if (GetBooleanSetting(context, kLogStderrSetting, false)) {
-		const std::string out = note + "\n";
-		std::cerr.write(out.data(), static_cast<std::streamsize>(out.size()));
-		std::cerr.flush();
-	}
-}
-
-static bool TryPostgresSQL(duckdb::Connection &con, const std::string &attached, const std::string &sql) {
-	try {
-		auto result = QueryOn(con, PostgresExecuteCall(attached, sql));
-		(void)result;
-		return true;
-	} catch (const duckdb::InterruptException &) {
-		throw;
-	} catch (const std::bad_alloc &) {
-		throw;
-	} catch (const Exception &) {
-	} catch (const std::exception &) {
-	}
-	try {
-		auto result = QueryOn(con, PostgresQueryCall(attached, sql));
-		(void)result;
-		return true;
-	} catch (const duckdb::InterruptException &) {
-		throw;
-	} catch (const std::bad_alloc &) {
-		throw;
-	} catch (const Exception &) {
-	} catch (const std::exception &) {
-	}
-	return false;
-}
-
-static CatalogLockTimeout PrepareCatalogLockTimeout(duckdb::Connection &con, duckdb::ClientContext &context,
-                                                    const std::string &catalog) {
-	CatalogLockTimeout state;
-	const std::string timeout = GetStringSetting(context, kCatalogLockTimeoutSetting);
-	if (timeout.empty() || catalog.empty()) {
-		return state;
-	}
-	std::string error;
-	if (!IsSafeTimeoutLiteral(timeout, error)) {
-		throw duckdb::InvalidInputException("%s", error.c_str());
-	}
-	state.requested = true;
-	state.attached = MetadataCatalog(catalog);
-	if (TryPostgresSQL(con, state.attached, PostgresLockTimeoutSQL(timeout))) {
-		state.applied = true;
-		state.note = "lakemon catalog_lock_timeout applied attached=" + state.attached + " value=" + timeout;
-	} else {
-		state.note = kTimeoutNotApplied;
-	}
-	return state;
-}
-
-static void ResetCatalogLockTimeout(duckdb::Connection &con, CatalogLockTimeout &state) {
-	if (!state.applied) {
-		return;
-	}
-	state.applied = false;
-	TryPostgresSQL(con, state.attached, PostgresResetLockTimeoutSQL());
-}
-
-void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows, const std::string &catalog) {
+void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow> &rows) {
 	if (!context.db) {
 		throw duckdb::InvalidInputException("lakemon: database handle is not available");
 	}
-	// One nested Connection for every DuckLake CALL so SET lock_timeout and
-	// RESET share the same postgres_scanner session as those CALLs. A new
-	// Connection per statement would apply lock_timeout on a pool connection
-	// that is not the commit session (and leak it).
+	// Nested Connection so a failed DuckLake CALL does not poison the
+	// ClientContext that is executing lakemon_*.
 	duckdb::Connection con(*context.db);
-	CatalogLockTimeout timeout;
-	bool timeout_note_on_row = false;
 
 	bool failed = false;
 	bool interrupted = false;
@@ -254,9 +175,6 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 	bool ducklake_present = true;
 	const uint64_t total_weight = SumRowWeights(rows);
 	uint64_t completed_weight = 0;
-	try {
-		timeout = PrepareCatalogLockTimeout(con, context, catalog);
-		EmitOperatorNote(context, timeout.note);
 	for (auto &row : rows) {
 		const uint64_t weight = RowWeight(row);
 		if (row.sql.empty()) {
@@ -288,10 +206,6 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 				completed_weight += weight;
 				continue;
 			}
-			if (timeout.requested && !timeout.applied && !timeout_note_on_row && !timeout.note.empty()) {
-				AppendDetails(row, timeout.note);
-				timeout_note_on_row = true;
-			}
 		}
 		EmitStepLog(context, true, row, completed_weight, total_weight, "");
 		const auto started = std::chrono::steady_clock::now();
@@ -307,7 +221,6 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 			failed = true;
 			interrupted = true;
 		} catch (const std::bad_alloc &) {
-			ResetCatalogLockTimeout(con, timeout);
 			throw;
 		} catch (const Exception &ex) {
 			row.status = "error";
@@ -324,11 +237,6 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 		EmitStepLog(context, false, row, completed_weight + weight, total_weight, error);
 		completed_weight += weight;
 	}
-	} catch (...) {
-		ResetCatalogLockTimeout(con, timeout);
-		throw;
-	}
-	ResetCatalogLockTimeout(con, timeout);
 	if (interrupted) {
 		throw duckdb::InterruptException();
 	}

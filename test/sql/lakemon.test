@@ -150,23 +150,7 @@ SELECT current_setting('lakemon_log_stderr')::BOOLEAN;
 true
 
 statement ok
-SET lakemon_catalog_lock_timeout = '30s';
-
-query I
-SELECT current_setting('lakemon_catalog_lock_timeout');
-----
-30s
-
-statement error
-SET lakemon_catalog_lock_timeout = 'nope';
-----
-lakemon_catalog_lock_timeout
-
-statement ok
 RESET lakemon_log_stderr;
-
-statement ok
-RESET lakemon_catalog_lock_timeout;
 
 statement error
 CALL lakemon_set_policy('');

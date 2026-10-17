@@ -178,12 +178,6 @@ CALL lakemon_maintain_global('no_such_lake', 'main.events');
 ----
 lakemon_maintain_global
 
-# Invalid lock timeout is refused at SET (not later at maintain).
-statement error
-SET lakemon_catalog_lock_timeout = 'nope';
-----
-lakemon_catalog_lock_timeout
-
 statement ok
 SET lakemon_log_stderr = true;
 

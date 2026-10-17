@@ -38,7 +38,6 @@
 #endif
 
 #include "duckdb/main/config.hpp"
-#include "lakemon_observe.hpp"
 
 #if defined(__has_include)
 #if __has_include("duckdb/logging/logger.hpp")
@@ -342,37 +341,12 @@ inline void RegisterLakemonLogType(duckdb::DatabaseInstance &db) {
 #endif
 }
 
-// 1.5 and current 2.x (cyanoptera) both use this callback type.
-// SettingCallbackInfo is not what AddExtensionOption accepts on 2.x yet.
-inline void LakemonLockTimeoutSet(duckdb::ClientContext &, duckdb::SetScope, duckdb::Value &parameter) {
-	std::string error;
-	const std::string value = parameter.IsNull() ? std::string() : duckdb::StringValue::Get(parameter);
-	if (!IsSafeTimeoutLiteral(value, error)) {
-		throw duckdb::InvalidInputException("%s", error.c_str());
-	}
-}
-
 inline void RegisterLakemonSettings(duckdb::DatabaseInstance &db) {
 	auto &config = duckdb::DBConfig::GetConfig(db);
 	try {
 		config.AddExtensionOption("lakemon_log_stderr",
 		                          "Write lakemon maintain step start/end lines to stderr",
 		                          duckdb::LogicalType::BOOLEAN, duckdb::Value::BOOLEAN(false));
-	} catch (const duckdb::InterruptException &) {
-		throw;
-	} catch (const std::bad_alloc &) {
-		throw;
-	} catch (const duckdb::Exception &) {
-	} catch (const std::exception &) {
-	}
-	try {
-		config.AddExtensionOption("lakemon_catalog_lock_timeout",
-		                          "Postgres lock_timeout on the maintain postgres_scanner session "
-		                          "(same nested Connection as each DuckLake CALL), then RESET "
-		                          "(for example 30s). DuckLake catalog commit uses its own PGconn; "
-		                          "put options=-c lock_timeout=30s on the Postgres ATTACH string "
-		                          "to fail-fast there. Empty keeps the catalog default.",
-		                          duckdb::LogicalType::VARCHAR, duckdb::Value(""), LakemonLockTimeoutSet);
 	} catch (const duckdb::InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {
