@@ -127,11 +127,13 @@ SELECT * FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run 
 ----
 CREATE
 
-# Same bind path as C API / Python / JDBC prepare with a parameter.
+# Bare ? is refused before execute. Sqllogictest supplies no values, so DuckDB
+# errors at bind ("parameter" on 1.5 and 2.x). C API / driver prepare is
+# covered by the Postgres lake script (message contains "prepared").
 statement error
 SELECT * FROM lakemon_maintain(?, dry_run => false);
 ----
-prepared
+parameter
 
 statement ok
 BEGIN;
