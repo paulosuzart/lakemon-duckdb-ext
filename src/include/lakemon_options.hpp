@@ -106,7 +106,7 @@ inline bool TryParseDouble(const std::string &raw, double &out) noexcept {
 	if (raw.empty()) {
 		return false;
 	}
-	char *end = NULL;
+	char *end = nullptr;
 	const double value = std::strtod(raw.c_str(), &end);
 	if (end == raw.c_str()) {
 		return false;

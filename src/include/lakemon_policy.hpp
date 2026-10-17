@@ -585,7 +585,8 @@ inline bool RungHasFileId(const PlannedRewriteStep &step, uint64_t data_file_id)
 }
 
 inline void MergeRewriteRung(PlannedRewriteStep &dst, PlannedRewriteStep &&src) {
-	for (auto &file : src.files) {
+	PlannedRewriteStep incoming = std::move(src);
+	for (auto &file : incoming.files) {
 		if (!RungHasFileId(dst, file.data_file_id)) {
 			dst.files.push_back(std::move(file));
 		}

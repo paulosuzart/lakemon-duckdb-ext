@@ -29,14 +29,15 @@ static const PolicyColumn kPolicyValueCols[] = {
 
 static const size_t kPolicyValueColCount = sizeof(kPolicyValueCols) / sizeof(kPolicyValueCols[0]);
 
-static const char *kSchemaSQL = "CREATE SCHEMA IF NOT EXISTS __lakemon";
+static const char *const kSchemaSQL = "CREATE SCHEMA IF NOT EXISTS __lakemon";
 
-static const char *kAlterSQL[] = {"ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS high_min BIGINT",
-                                  "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS medium_min BIGINT",
-                                  "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS low_min BIGINT",
-                                  "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS byte_budget BIGINT",
-                                  "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS max_rewrite_steps BIGINT",
-                                  "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS min_delete_ratio DOUBLE"};
+static const char *const kAlterSQL[] = {
+    "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS high_min BIGINT",
+    "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS medium_min BIGINT",
+    "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS low_min BIGINT",
+    "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS byte_budget BIGINT",
+    "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS max_rewrite_steps BIGINT",
+    "ALTER TABLE __lakemon.policy ADD COLUMN IF NOT EXISTS min_delete_ratio DOUBLE"};
 
 static std::string PolicySelectList() {
 	std::ostringstream sql;
