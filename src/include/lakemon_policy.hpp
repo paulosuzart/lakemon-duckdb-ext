@@ -947,6 +947,36 @@ inline void ApplyNativeOptions(TableHint &hint, const std::vector<OptionBinding>
 	}
 }
 
+// File inventory only sees parquet. Live tables that still have only inlined
+// inserts must still get a hint so flush_inlined is planned.
+inline bool SameTableHint(const TableHint &left, const TableHint &right) {
+	return left.schema_name == right.schema_name && left.table_name == right.table_name;
+}
+
+inline void AddMissingLiveTableHints(std::vector<TableHint> &hints, const std::vector<TableHint> &live_tables,
+                                     const std::vector<OptionBinding> &options) {
+	for (const auto &live : live_tables) {
+		if (live.schema_name.empty() && live.table_name.empty()) {
+			continue;
+		}
+		bool found = false;
+		for (const auto &hint : hints) {
+			if (SameTableHint(hint, live)) {
+				found = true;
+				break;
+			}
+		}
+		if (found) {
+			continue;
+		}
+		TableHint hint;
+		hint.schema_name = live.schema_name;
+		hint.table_name = live.table_name;
+		ApplyNativeOptions(hint, options);
+		hints.push_back(std::move(hint));
+	}
+}
+
 inline TableHint SummarizeTable(const std::vector<FileStat> &files, const ActivePolicy &policy) {
 	TableHint hint;
 	if (files.empty()) {

@@ -11,7 +11,7 @@ namespace lakemon {
 // Only a hard inventory failure stops the table pipeline before rewrite/merge.
 // Execute is fail-fast for rewrite/merge/retention: a failed DuckLake step
 // stops the rest of the batch. A flush_inlined error does not: catalog-wide
-// maintain issues one flush CALL per inventoried table, so one table's flush
+// maintain issues one flush CALL per live table, so one table's flush
 // failure must not skip rewrite/merge on the remaining tables (or on that
 // table). Expire, old-file cleanup, and orphan delete are catalog-global and
 // live in lakemon_maintain_global, not lakemon_maintain.

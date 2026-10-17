@@ -309,9 +309,10 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 	const int64_t max_delete_files =
 	    GetInt64Setting(context, kFlushInlinedMaxDeleteFilesSetting, kDefaultFlushInlinedMaxDeleteFiles);
 
-	// One flush CALL per inventoried table (hints already carry inlined-delete
-	// stats from InventoryTables). Catalog-wide auto_compact=false skips flush
-	// the same way as rewrite/merge, so the delete-file guard is not reported.
+	// One flush CALL per live table (hints already carry inlined-delete stats
+	// from InventoryTables, including tables with only inlined inserts).
+	// Catalog-wide auto_compact=false skips flush the same way as rewrite/merge,
+	// so the delete-file guard is not reported.
 	for (const auto &hint : hints) {
 		TableRef ref;
 		ref.schema = hint.schema_name;

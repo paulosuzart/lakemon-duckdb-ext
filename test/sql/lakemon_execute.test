@@ -26,7 +26,7 @@ INSERT INTO lake.bronze_financial.subscription VALUES (1, 'a'), (2, 'b');
 statement ok
 INSERT INTO lake.bronze_financial.subscription VALUES (3, 'c'), (4, 'd');
 
-# Plan-only still returns planned SQL without running DuckLake mutations.
+# Inlined inserts and no parquet files yet: still plan flush for this live table.
 query I
 SELECT status FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true)
 WHERE step = 'flush_inlined';

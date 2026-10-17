@@ -562,6 +562,31 @@ static void TestFlushInlinedGuardAndDetails() {
 	Expect(measure.find("permission denied") != std::string::npos, "measure error keeps the cause");
 }
 
+static void TestInlinedOnlyTablesGetHints() {
+	std::vector<TableHint> hints;
+	TableHint live;
+	live.schema_name = "bronze_financial";
+	live.table_name = "subscription";
+	AddMissingLiveTableHints(hints, {live}, {});
+	Expect(hints.size() == 1, "inlined-only live table is inventoried for flush");
+	Expect(hints[0].schema_name == "bronze_financial", "live table schema");
+	Expect(hints[0].table_name == "subscription", "live table name");
+	Expect(hints[0].file_count == 0, "no parquet files yet");
+	Expect(hints[0].auto_compact, "default auto_compact on an inlined-only table");
+	AddMissingLiveTableHints(hints, {live}, {});
+	Expect(hints.size() == 1, "already inventoried table is not duplicated");
+
+	TableHint existing;
+	existing.schema_name = "main";
+	existing.table_name = "events";
+	existing.file_count = 2;
+	std::vector<TableHint> with_files = {existing};
+	TableHint also_live = existing;
+	AddMissingLiveTableHints(with_files, {also_live}, {});
+	Expect(with_files.size() == 1, "file-backed table is not replaced");
+	Expect(with_files[0].file_count == 2, "existing file stats are kept");
+}
+
 static void TestFormatInventoryDiagnosticsJoinsAll() {
 	lakemon::InventoryDiagnostic first;
 	first.schema_name = "main";
@@ -610,6 +635,7 @@ int main() {
 	TestGlobalExpireCleanupSkipSemantics();
 	TestCumulativeCrossesCutIsOverflowSafe();
 	TestFlushInlinedGuardAndDetails();
+	TestInlinedOnlyTablesGetHints();
 	TestFormatInventoryDiagnosticsJoinsAll();
 	if (TestFailures()) {
 		std::cerr << TestFailures() << " failure(s)" << std::endl;

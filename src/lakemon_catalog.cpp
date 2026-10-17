@@ -405,7 +405,9 @@ std::vector<policy::TableHint> InventoryTables(duckdb::ClientContext &context, c
 		hints.push_back(std::move(hint));
 	}
 	try {
-		AttachInlinedDeleteStats(hints, LoadInlinedDeleteBacklog(context, catalog, filter));
+		const std::vector<policy::TableHint> backlog = LoadInlinedDeleteBacklog(context, catalog, filter);
+		policy::AddMissingLiveTableHints(hints, backlog, options);
+		AttachInlinedDeleteStats(hints, backlog);
 	} catch (const duckdb::InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {
