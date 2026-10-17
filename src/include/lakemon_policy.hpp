@@ -18,7 +18,9 @@ constexpr uint64_t kMiB = 1024ULL * 1024ULL;
 
 static constexpr const char *kKindRewriteLadder = "rewrite_ladder";
 static constexpr const char *kKindMergeTier = "merge_tier";
+static constexpr const char *kKindSetting = "setting";
 static constexpr const char *kLadderName = "default";
+static constexpr const char *kFlushInlinedMaxDeleteFilesName = "flush_inlined_max_delete_files";
 static constexpr const char *kSourceDefault = "default";
 static constexpr const char *kSourceOverride = "override";
 
@@ -850,7 +852,29 @@ struct TableHint {
 	std::string merge_tier_hint = "none";
 	std::string target_file_size;
 	bool auto_compact = true;
+	// Distinct inlined-delete file_ids that still exist in ducklake_data_file.
+	// Ended files (end_snapshot IS NOT NULL) still get a delete file on flush.
+	uint64_t inlined_delete_rows = 0;
+	uint64_t inlined_delete_files_active = 0;
+	uint64_t inlined_delete_files_ended = 0;
 };
+
+inline uint64_t PlannedFlushDeleteFiles(const TableHint &hint) {
+	return SaturatingAdd(hint.inlined_delete_files_active, hint.inlined_delete_files_ended);
+}
+
+inline std::string FormatFlushInlinedDetails(const TableHint &hint) {
+	std::ostringstream out;
+	out << "planned_delete_files=" << PlannedFlushDeleteFiles(hint)
+	    << " inlined_delete_rows=" << hint.inlined_delete_rows
+	    << " inlined_delete_files_active=" << hint.inlined_delete_files_active
+	    << " inlined_delete_files_ended=" << hint.inlined_delete_files_ended;
+	return out.str();
+}
+
+inline std::string FormatFlushInlinedSettingNotes() {
+	return "0 = no limit; skip flush_inlined when planned delete files exceed this";
+}
 
 inline void RefreshRewritePlan(TableHint &hint) {
 	hint.rewrite_plan = FormatRewritePlan(hint.rewrite_steps);

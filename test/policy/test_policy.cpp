@@ -503,6 +503,37 @@ static void TestCumulativeCrossesCutIsOverflowSafe() {
 	Expect(!CumulativeCrossesCut(1, ~0ULL, 1, 2), "tiny cumulative vs huge total stays below 1/2");
 }
 
+static void TestFlushInlinedGuardAndDetails() {
+	Expect(!lakemon::FlushInlinedExceedsLimit(0, 500), "empty backlog does not skip");
+	Expect(!lakemon::FlushInlinedExceedsLimit(500, 500), "equal to the limit still flushes");
+	Expect(lakemon::FlushInlinedExceedsLimit(501, 500), "one over the default limit skips");
+	Expect(!lakemon::FlushInlinedExceedsLimit(10000, 0), "0 is no limit");
+	Expect(!lakemon::FlushInlinedExceedsLimit(2, -1), "negative is no limit");
+	Expect(lakemon::FlushInlinedExceedsLimit(2, 1), "low threshold skips");
+	Expect(!lakemon::FlushInlinedExceedsLimit(1, 1), "planned == limit still flushes");
+
+	TableHint hint;
+	hint.inlined_delete_rows = 12;
+	hint.inlined_delete_files_active = 3;
+	hint.inlined_delete_files_ended = 9;
+	Expect(PlannedFlushDeleteFiles(hint) == 12, "planned delete files are active + ended");
+	const std::string details = FormatFlushInlinedDetails(hint);
+	Expect(details.find("planned_delete_files=12") != std::string::npos, "details include planned count");
+	Expect(details.find("inlined_delete_rows=12") != std::string::npos, "details include row count");
+	Expect(details.find("inlined_delete_files_active=3") != std::string::npos, "details include active files");
+	Expect(details.find("inlined_delete_files_ended=9") != std::string::npos, "details include ended files");
+
+	const std::string skip = lakemon::FlushInlinedSkipReason(12, 5);
+	Expect(skip.find("planned_delete_files=12") != std::string::npos, "skip names the planned count");
+	Expect(skip.find("lakemon_flush_inlined_max_delete_files=5") != std::string::npos, "skip names the setting");
+	Expect(skip.find("ducklake_expire_snapshots") != std::string::npos, "skip recommends expire");
+
+	Expect(FormatFlushInlinedSettingNotes().find("0 = no limit") != std::string::npos, "policy notes mention 0");
+	Expect(std::string(kKindSetting) == "setting", "policy kind for the setting row");
+	Expect(std::string(kFlushInlinedMaxDeleteFilesName) == "flush_inlined_max_delete_files",
+	       "policy name matches the setting suffix");
+}
+
 static void TestFormatInventoryDiagnosticsJoinsAll() {
 	lakemon::InventoryDiagnostic first;
 	first.schema_name = "main";
@@ -550,6 +581,7 @@ int main() {
 	TestPipelineStepsAreIndependent();
 	TestGlobalExpireCleanupSkipSemantics();
 	TestCumulativeCrossesCutIsOverflowSafe();
+	TestFlushInlinedGuardAndDetails();
 	TestFormatInventoryDiagnosticsJoinsAll();
 	if (TestFailures()) {
 		std::cerr << TestFailures() << " failure(s)" << std::endl;

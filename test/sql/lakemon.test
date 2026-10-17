@@ -17,7 +17,7 @@ SELECT lakemon_version();
 query I
 SELECT count(*) FROM lakemon_policy();
 ----
-4
+5
 
 query I
 SELECT count(*) FROM lakemon_policy() WHERE kind = 'rewrite_ladder';
@@ -140,6 +140,31 @@ SELECT lakemon_version();
 ----
 0.1.1
 
+query I
+SELECT count(*) FROM lakemon_policy() WHERE kind = 'setting';
+----
+1
+
+query I
+SELECT name FROM lakemon_policy() WHERE kind = 'setting';
+----
+flush_inlined_max_delete_files
+
+query I
+SELECT threshold_or_target FROM lakemon_policy() WHERE kind = 'setting';
+----
+500
+
+query I
+SELECT source FROM lakemon_policy() WHERE kind = 'setting';
+----
+default
+
+query I
+SELECT notes FROM lakemon_policy() WHERE kind = 'setting';
+----
+0 = no limit; skip flush_inlined when planned delete files exceed this
+
 # Observability settings register with the extension.
 statement ok
 SET lakemon_log_stderr = true;
@@ -151,6 +176,35 @@ true
 
 statement ok
 RESET lakemon_log_stderr;
+
+statement ok
+SET lakemon_flush_inlined_max_delete_files = 1;
+
+query I
+SELECT current_setting('lakemon_flush_inlined_max_delete_files')::BIGINT;
+----
+1
+
+query II
+SELECT threshold_or_target, source FROM lakemon_policy() WHERE kind = 'setting';
+----
+1	session
+
+statement ok
+SET lakemon_flush_inlined_max_delete_files = 0;
+
+query I
+SELECT threshold_or_target FROM lakemon_policy() WHERE kind = 'setting';
+----
+0
+
+statement ok
+RESET lakemon_flush_inlined_max_delete_files;
+
+query II
+SELECT threshold_or_target, source FROM lakemon_policy() WHERE kind = 'setting';
+----
+500	default
 
 statement error
 CALL lakemon_set_policy('');

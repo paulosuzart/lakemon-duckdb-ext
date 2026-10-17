@@ -262,6 +262,113 @@ std::vector<policy::OptionBinding> LoadCatalogOptions(duckdb::ClientContext &con
 	return rows;
 }
 
+static bool MatchesTableFilter(const std::string &schema_name, const std::string &table_name, const TableRef &filter) {
+	if (filter.table.empty()) {
+		return true;
+	}
+	if (table_name != filter.table) {
+		return false;
+	}
+	return filter.schema.empty() || schema_name == filter.schema;
+}
+
+static void MeasureInlinedDeleteTable(duckdb::ClientContext &context, const std::string &meta,
+                                      int64_t table_id, policy::TableHint &hint) {
+	const std::string delete_table = QuoteIdent(InlinedDeleteTableName(table_id));
+	std::ostringstream sql;
+	sql << "SELECT COUNT(*)::BIGINT, "
+	       "COUNT(DISTINCT CASE WHEN d.end_snapshot IS NULL THEN d.data_file_id END)::BIGINT, "
+	       "COUNT(DISTINCT CASE WHEN d.end_snapshot IS NOT NULL THEN d.data_file_id END)::BIGINT "
+	       "FROM "
+	    << meta << "." << delete_table << " del "
+	    << "JOIN " << meta << ".ducklake_data_file d ON d.data_file_id = del.file_id";
+	try {
+		auto result = RunSQL(context, sql.str());
+		if (!result || result->RowCount() == 0) {
+			return;
+		}
+		hint.inlined_delete_rows = static_cast<uint64_t>(CellInt64(*result, 0, 0));
+		hint.inlined_delete_files_active = static_cast<uint64_t>(CellInt64(*result, 1, 0));
+		hint.inlined_delete_files_ended = static_cast<uint64_t>(CellInt64(*result, 2, 0));
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		// No ducklake_inlined_delete_<id> (or unread): treat as zero backlog.
+	} catch (const std::exception &) {
+	}
+}
+
+std::vector<policy::TableHint> LoadInlinedDeleteBacklog(duckdb::ClientContext &context, const std::string &catalog,
+                                                        const TableRef &filter) {
+	std::vector<policy::TableHint> rows;
+	if (catalog.empty()) {
+		return rows;
+	}
+	const std::string meta = QuoteIdent(MetadataCatalog(catalog));
+	std::ostringstream sql;
+	sql << "SELECT s.schema_name, t.table_name, t.table_id FROM " << meta << ".ducklake_schema s JOIN " << meta
+	    << ".ducklake_table t ON t.schema_id = s.schema_id AND t.end_snapshot IS NULL AND s.end_snapshot IS NULL";
+	if (!filter.table.empty()) {
+		sql << " WHERE t.table_name = " << QuoteString(filter.table);
+		if (!filter.schema.empty()) {
+			sql << " AND s.schema_name = " << QuoteString(filter.schema);
+		}
+	}
+	try {
+		auto result = RunSQL(context, sql.str());
+		if (!result) {
+			return rows;
+		}
+		const auto n = result->RowCount();
+		for (duckdb::idx_t i = 0; i < n; i++) {
+			policy::TableHint hint;
+			try {
+				hint.schema_name = CellString(*result, 0, i);
+				hint.table_name = CellString(*result, 1, i);
+				if (hint.table_name.empty() || !MatchesTableFilter(hint.schema_name, hint.table_name, filter)) {
+					continue;
+				}
+				const int64_t table_id = CellInt64(*result, 2, i);
+				MeasureInlinedDeleteTable(context, meta, table_id, hint);
+				rows.push_back(std::move(hint));
+			} catch (const duckdb::InterruptException &) {
+				throw;
+			} catch (const std::bad_alloc &) {
+				throw;
+			} catch (const duckdb::Exception &) {
+				continue;
+			} catch (const std::exception &) {
+				continue;
+			}
+		}
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		return rows;
+	} catch (const std::exception &) {
+		return rows;
+	}
+	return rows;
+}
+
+static void AttachInlinedDeleteStats(std::vector<policy::TableHint> &hints,
+                                     const std::vector<policy::TableHint> &backlog) {
+	for (auto &hint : hints) {
+		for (const auto &row : backlog) {
+			if (row.schema_name == hint.schema_name && row.table_name == hint.table_name) {
+				hint.inlined_delete_rows = row.inlined_delete_rows;
+				hint.inlined_delete_files_active = row.inlined_delete_files_active;
+				hint.inlined_delete_files_ended = row.inlined_delete_files_ended;
+				break;
+			}
+		}
+	}
+}
+
 std::vector<policy::TableHint> InventoryTables(duckdb::ClientContext &context, const std::string &catalog,
                                                const TableRef &filter, std::vector<InventoryDiagnostic> *diagnostics,
                                                std::vector<policy::FileStat> *files_out) {
@@ -284,6 +391,15 @@ std::vector<policy::TableHint> InventoryTables(duckdb::ClientContext &context, c
 		policy::TableHint hint = policy::SummarizeTable(entry.second, active);
 		policy::ApplyNativeOptions(hint, options);
 		hints.push_back(std::move(hint));
+	}
+	try {
+		AttachInlinedDeleteStats(hints, LoadInlinedDeleteBacklog(context, catalog, filter));
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
 	}
 	// table_stats has no status column: total unread metadata must not look empty.
 	// Join every diagnostic (maintain already surfaces each one as a row).

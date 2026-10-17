@@ -300,10 +300,38 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 	}
 
 	const bool catalog_wide = options.table.table.empty();
+	const int64_t max_delete_files =
+	    GetInt64Setting(context, kFlushInlinedMaxDeleteFilesSetting, kDefaultFlushInlinedMaxDeleteFiles);
 
-	AppendPlanned(rows, "flush_inlined", "ducklake_flush_inlined_data",
-	              FlushInlinedDataCall(options.catalog, options.table), options.table.schema, options.table.table,
-	              "flush inlined rows before rewrite/merge");
+	std::vector<policy::TableHint> flush_targets;
+	try {
+		flush_targets = LoadInlinedDeleteBacklog(context, options.catalog, options.table);
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
+	if (flush_targets.empty()) {
+		flush_targets = hints;
+	}
+
+	for (const auto &target : flush_targets) {
+		TableRef ref;
+		ref.schema = target.schema_name;
+		ref.table = target.table_name;
+		const uint64_t planned = policy::PlannedFlushDeleteFiles(target);
+		const std::string details = policy::FormatFlushInlinedDetails(target);
+		if (FlushInlinedExceedsLimit(planned, max_delete_files)) {
+			rows.push_back(MakeRow("flush_inlined", target.schema_name, target.table_name, "ducklake_flush_inlined_data",
+			                       "skip", static_cast<int64_t>(planned), 0,
+			                       details + " | " + FlushInlinedSkipReason(planned, max_delete_files)));
+			continue;
+		}
+		AppendPlanned(rows, "flush_inlined", "ducklake_flush_inlined_data", FlushInlinedDataCall(options.catalog, ref),
+		              target.schema_name, target.table_name, details, static_cast<int64_t>(planned));
+	}
 
 	for (const auto &hint : hints) {
 		TableRef ref;

@@ -1,6 +1,7 @@
 // Maintain pipeline rules. Header-only so the contract can be tested without DuckDB.
 #pragma once
 
+#include <cstdint>
 #include <cctype>
 #include <string>
 
@@ -142,6 +143,23 @@ inline bool ShouldRunCleanup(bool skip_cleanup) {
 // lakemon never plans or executes that CALL.
 inline bool ShouldEmitRewriteCall(double delete_threshold) {
 	return delete_threshold > 0.0;
+}
+
+// Planned delete files for ducklake_flush_inlined_data: distinct inlined-delete
+// file_ids that still exist in ducklake_data_file (active + ended). 0 = no limit.
+static constexpr int64_t kDefaultFlushInlinedMaxDeleteFiles = 500;
+
+inline bool FlushInlinedExceedsLimit(uint64_t planned_delete_files, int64_t max_delete_files) noexcept {
+	if (max_delete_files <= 0) {
+		return false;
+	}
+	return planned_delete_files > static_cast<uint64_t>(max_delete_files);
+}
+
+inline std::string FlushInlinedSkipReason(uint64_t planned_delete_files, int64_t max_delete_files) {
+	return "planned_delete_files=" + std::to_string(planned_delete_files) +
+	       " exceeds lakemon_flush_inlined_max_delete_files=" + std::to_string(max_delete_files) +
+	       "; run ducklake_expire_snapshots to drop ended files before flushing";
 }
 
 } // namespace lakemon

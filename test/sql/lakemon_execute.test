@@ -33,6 +33,12 @@ WHERE step = 'flush_inlined';
 ----
 planned
 
+query I
+SELECT count(*) FROM lakemon_maintain('lake', 'bronze_financial.subscription', dry_run => true)
+WHERE step = 'flush_inlined' AND details LIKE '%planned_delete_files=%';
+----
+1
+
 # Deadlock regression: CALL / SELECT with dry_run => false must execute from
 # bind_replace (not table-function init). One SELECT adds snapshots; a double
 # bind would add them twice. Exact 1:1 snapshot delta is asserted in the
