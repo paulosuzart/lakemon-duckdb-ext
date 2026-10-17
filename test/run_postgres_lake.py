@@ -861,6 +861,27 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 		print("no Postgres snapshot relation found; skip EXCLUSIVE holder")
 		return
 
+	# A no-op flush does not write ducklake_snapshot, so ExclusiveLock would
+	# not block it. Seed at least two new files so merge must commit.
+	session.inlining_row_limit = 0
+	contention = f"""
+		INSERT INTO {CATALOG}.{QUALIFIED} VALUES (9101, 'lock-a'), (9102, 'lock-b');
+		INSERT INTO {CATALOG}.{QUALIFIED} VALUES (9103, 'lock-c'), (9104, 'lock-d');
+		INSERT INTO {CATALOG}.{QUALIFIED} VALUES (9105, 'lock-e'), (9106, 'lock-f');
+		"""
+	try:
+		session.run(
+			f"CALL ducklake_set_option('{CATALOG}', 'data_inlining_row_limit', 0);\n{contention}",
+			timeout=timeout,
+		)
+	except Failed:
+		session.run(f"CALL {CATALOG}.set_option('data_inlining_row_limit', 0);\n{contention}", timeout=timeout)
+	contention_files = count_files(session)
+	print(f"contention seed: files={contention_files}")
+	if contention_files < 2:
+		raise Failed(f"contention seed expected at least 2 files, got {contention_files}")
+	# Hold the lock only after the seed commits.
+
 	# Do not ALTER DATABASE lock_timeout: that would mask whether
 	# lakemon_catalog_lock_timeout reached the commit session.
 	holder = hold_psql_lock(pg, relations, "EXCLUSIVE")

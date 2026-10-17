@@ -342,11 +342,9 @@ inline void RegisterLakemonLogType(duckdb::DatabaseInstance &db) {
 #endif
 }
 
-#if LAKEMON_DUCKDB_2
-inline void LakemonLockTimeoutSet(duckdb::SettingCallbackInfo &, duckdb::Value &parameter) {
-#else
+// 1.5 and current 2.x (cyanoptera) both use this callback type.
+// SettingCallbackInfo is not what AddExtensionOption accepts on 2.x yet.
 inline void LakemonLockTimeoutSet(duckdb::ClientContext &, duckdb::SetScope, duckdb::Value &parameter) {
-#endif
 	std::string error;
 	const std::string value = parameter.IsNull() ? std::string() : duckdb::StringValue::Get(parameter);
 	if (!IsSafeTimeoutLiteral(value, error)) {

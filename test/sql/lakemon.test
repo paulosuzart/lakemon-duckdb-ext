@@ -145,7 +145,7 @@ statement ok
 SET lakemon_log_stderr = true;
 
 query I
-SELECT lower(current_setting('lakemon_log_stderr')) IN ('true', '1', 't');
+SELECT current_setting('lakemon_log_stderr')::BOOLEAN;
 ----
 true
 
