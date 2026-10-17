@@ -1,4 +1,5 @@
 # Included by DuckDB's build system. It specifies which extension to load.
+# Extension version: 0.1.1 (lakemon_version / LakemonExtension::Version fallback).
 
 duckdb_extension_load(lakemon
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}

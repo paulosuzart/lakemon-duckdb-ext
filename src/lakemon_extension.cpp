@@ -667,7 +667,7 @@ static unique_ptr<GlobalTableFunctionState> SetPolicyInit(ClientContext &context
 }
 
 static void VersionFun(DataChunk &, ExpressionState &, Vector &result) {
-	lakemon::ReferenceScalar(result, Value("0.1.0"));
+	lakemon::ReferenceScalar(result, Value("0.1.1"));
 }
 
 template <typename FunctionT>
@@ -783,7 +783,7 @@ std::string LakemonExtension::Version() const {
 #ifdef EXT_VERSION_LAKEMON
 	return EXT_VERSION_LAKEMON;
 #else
-	return "0.1.0";
+	return "0.1.1";
 #endif
 }
 

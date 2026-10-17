@@ -8,7 +8,7 @@
 extension:
   name: lakemon
   description: Smart DuckLake table maintain (adaptive rewrite + merge) and catalog-global expire/cleanup
-  version: 0.1.0
+  version: 0.1.1
   language: C++
   build: cmake
   license: MIT
