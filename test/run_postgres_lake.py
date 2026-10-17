@@ -133,10 +133,17 @@ class LakeSession:
 		self.inlining_row_limit = 10
 		self.last_stderr = ""
 		self.last_stdout = ""
+		# libpq startup options, no spaces (e.g. -clock_timeout=5s). Applied to
+		# DuckLake's catalog PGconn at ATTACH. postgres_execute SET lock_timeout
+		# does not reach that commit session.
+		self.pg_options = ""
 
 	def preamble(self) -> str:
+		pg = self.pg
+		if self.pg_options:
+			pg = f"{self.pg} options={self.pg_options}"
 		attach = (
-			f"ATTACH 'ducklake:postgres:{self.pg}' AS {CATALOG} "
+			f"ATTACH 'ducklake:postgres:{pg}' AS {CATALOG} "
 			f"(DATA_PATH '{self.data_path}', DATA_INLINING_ROW_LIMIT {self.inlining_row_limit});"
 		)
 		return "\n".join([part for part in self.loads if part] + [attach])
@@ -882,8 +889,13 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 		raise Failed(f"contention seed expected at least 2 files, got {contention_files}")
 	# Hold the lock only after the seed commits.
 
-	# Do not ALTER DATABASE lock_timeout: that would mask whether
-	# lakemon_catalog_lock_timeout reached the commit session.
+	# DuckLake commit uses its own PGconn. SET lock_timeout via
+	# postgres_execute on __ducklake_metadata_* does not reach it (CI hung
+	# 25s with ExclusiveLock held and lakemon_catalog_lock_timeout applied).
+	# Fail-fast is libpq options=-c lock_timeout on ATTACH. Do not ALTER DATABASE.
+	locked_session = LakeSession(session.duckdb, session.pg, session.data_path, session.loads)
+	locked_session.inlining_row_limit = 0
+	locked_session.pg_options = "-clock_timeout=5s"
 	holder = hold_psql_lock(pg, relations, "EXCLUSIVE")
 	try:
 		def exclusive_held():
@@ -894,7 +906,7 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 		print("psql EXCLUSIVE lock is visible")
 		print(held)
 		rows, err, elapsed = run_maintain_capture(
-			session,
+			locked_session,
 			f"""
 			SET lakemon_catalog_lock_timeout = '5s';
 			SET lakemon_log_stderr = true;
@@ -905,7 +917,7 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 		print("psql EXCLUSIVE maintain rows:")
 		print(json.dumps(rows, indent=2) if rows is not None else "(no rows; exception path)")
 		print("psql EXCLUSIVE maintain stderr:")
-		print(session.last_stderr)
+		print(locked_session.last_stderr)
 		if elapsed > CONCURRENT_TIMEOUT:
 			raise Failed(f"maintain took too long under a held catalog lock: {elapsed:.1f}s")
 		assert_maintain_lock_failure(rows, err, elapsed, "psql EXCLUSIVE")

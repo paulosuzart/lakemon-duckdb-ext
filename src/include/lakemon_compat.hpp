@@ -367,9 +367,11 @@ inline void RegisterLakemonSettings(duckdb::DatabaseInstance &db) {
 	}
 	try {
 		config.AddExtensionOption("lakemon_catalog_lock_timeout",
-		                          "Postgres lock_timeout applied on the same nested Connection as "
-		                          "each DuckLake CALL, then RESET (for example 30s). Empty keeps "
-		                          "the catalog default.",
+		                          "Postgres lock_timeout on the maintain postgres_scanner session "
+		                          "(same nested Connection as each DuckLake CALL), then RESET "
+		                          "(for example 30s). DuckLake catalog commit uses its own PGconn; "
+		                          "put options=-c lock_timeout=30s on the Postgres ATTACH string "
+		                          "to fail-fast there. Empty keeps the catalog default.",
 		                          duckdb::LogicalType::VARCHAR, duckdb::Value(""), LakemonLockTimeoutSet);
 	} catch (const duckdb::InterruptException &) {
 		throw;

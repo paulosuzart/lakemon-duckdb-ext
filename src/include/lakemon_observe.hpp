@@ -18,8 +18,8 @@ static constexpr const char *kLakemonLogTypeName = "lakemon";
 static constexpr const char *kCatalogLockHint =
     "lakemon: DuckLake catalog commit could not obtain a Postgres lock "
     "(another DuckDB session may be holding the catalog). "
-    "Commit or disconnect the other session, or SET lakemon_catalog_lock_timeout "
-    "(for example '30s') so the wait fails fast.";
+    "Commit or disconnect the other session, or put options=-c lock_timeout=30s "
+    "on the Postgres ATTACH string so the wait fails fast.";
 
 inline bool IsSafeTimeoutLiteral(const std::string &value, std::string &error) {
 	if (value.empty()) {
@@ -57,9 +57,10 @@ inline std::string PostgresResetLockTimeoutSQL() {
 
 static constexpr const char *kTimeoutNotApplied =
     "lakemon: lakemon_catalog_lock_timeout was not applied on the maintain "
-    "connection (postgres_execute / postgres_query failed). DuckLake catalog "
-    "commit may still wait. Put options=-c lock_timeout=30s on the Postgres "
-    "ATTACH string, or disconnect the other session.";
+    "postgres_scanner session (postgres_execute / postgres_query failed). "
+    "DuckLake catalog commit uses its own PGconn and may still wait. Put "
+    "options=-c lock_timeout=30s on the Postgres ATTACH string, or disconnect "
+    "the other session.";
 
 inline std::string PostgresExecuteCall(const std::string &attached, const std::string &sql) {
 	return "CALL postgres_execute(" + QuoteString(attached) + ", " + QuoteString(sql) + ")";

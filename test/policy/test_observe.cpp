@@ -77,7 +77,8 @@ static void TestCatalogLockErrorHint() {
 	Expect(!lakemon::LooksLikeCatalogLockWait("catalog is not attached"), "ordinary errors stay ordinary");
 	const std::string annotated = lakemon::AnnotateCatalogLockError("ERROR: lock timeout");
 	Expect(Contains(annotated, "another DuckDB session"), "hint names the other session");
-	Expect(Contains(annotated, "lakemon_catalog_lock_timeout"), "hint names the setting");
+	Expect(Contains(annotated, "lock_timeout"), "hint names lock_timeout");
+	Expect(Contains(annotated, "ATTACH"), "hint names the ATTACH fallback");
 	const std::string again = lakemon::AnnotateCatalogLockError(annotated);
 	Expect(again == annotated, "hint is not duplicated");
 }
