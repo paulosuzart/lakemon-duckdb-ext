@@ -45,7 +45,7 @@ docs:
     * Table maintain (lakemon_maintain) vs catalog-global expire/cleanup (lakemon_maintain_global)
     * CALL / SELECT plan and execute by default (dry_run for plan only)
     * One result row per step (ok / skip / error / planned)
-    * Per-step DuckDB logs (and optional stderr) with duration and byte-weighted progress
+    * Optional stderr step logs with duration and byte-weighted progress
 
     Requires the core ducklake extension in the same session and an attached DuckLake catalog.
     Compatible with DuckDB 1.5.* and DuckDB 2.x.

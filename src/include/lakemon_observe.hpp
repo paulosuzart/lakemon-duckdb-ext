@@ -50,6 +50,17 @@ inline std::string PostgresLockTimeoutSQL(const std::string &timeout) {
 	return "SET lock_timeout = " + QuoteString(timeout);
 }
 
+// Restore the session default after maintain (does not force wait-forever).
+inline std::string PostgresResetLockTimeoutSQL() {
+	return "RESET lock_timeout";
+}
+
+static constexpr const char *kTimeoutNotApplied =
+    "lakemon: lakemon_catalog_lock_timeout was not applied on the maintain "
+    "connection (postgres_execute / postgres_query failed). DuckLake catalog "
+    "commit may still wait. Put options=-c lock_timeout=30s on the Postgres "
+    "ATTACH string, or disconnect the other session.";
+
 inline std::string PostgresExecuteCall(const std::string &attached, const std::string &sql) {
 	return "CALL postgres_execute(" + QuoteString(attached) + ", " + QuoteString(sql) + ")";
 }
@@ -100,7 +111,7 @@ inline std::string QualifiedTable(const std::string &schema, const std::string &
 	return schema + "." + table;
 }
 
-// Stable duckdb_logs / stderr line. CI parses duration_ms and progress.
+// Stable stderr / log line. CI parses duration_ms and progress from stderr.
 inline std::string FormatStepLog(bool start, const std::string &step, const std::string &action,
                                  const std::string &schema, const std::string &table, const std::string &status,
                                  int64_t files_processed, int64_t files_created, uint64_t planned_bytes,

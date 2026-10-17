@@ -90,22 +90,12 @@ static void EmitRows(ClientContext &, TableFunctionInput &input, DataChunk &outp
 	lakemon::FinishChunk(output, count);
 }
 
-// 0–100 percent of completed step weights. CALL / SELECT execute in
-// bind_replace, so this runs only when the table-function path is used
-// (plan-only leftover emit). Per-step logs report the same fraction.
+// Negative = unknown. CALL / SELECT execute in bind_replace, so this path
+// only emits already-finished rows and would jump 0 → 100. Stderr step
+// lines carry the byte-weighted fraction instead.
 static double MaintainScanProgress(ClientContext &, const FunctionData *,
-                                   const GlobalTableFunctionState *global_state) {
-	if (!global_state) {
-		return 0;
-	}
-	auto &state = global_state->Cast<RowState>();
-	const idx_t pos = state.offset.load();
-	uint64_t completed = 0;
-	const idx_t n = static_cast<idx_t>(state.weights.size());
-	for (idx_t i = 0; i < pos && i < n; i++) {
-		completed += state.weights[i];
-	}
-	return lakemon::ProgressPercent(completed, state.total_weight);
+                                   const GlobalTableFunctionState *) {
+	return -1;
 }
 
 static string RequireCatalog(const Value &value) {

@@ -9,15 +9,12 @@
 
 namespace lakemon {
 
-// Weight of one result row. Prefer planned bytes (rewrite / merge bands),
-// then planned file count, then one unit so flush / expire / skip still move
-// the fraction.
+// Weight of one result row in one unit: planned bytes when known, otherwise 1.
+// File counts are not mixed into the byte total (they are a different unit).
 inline uint64_t StepWeight(uint64_t planned_bytes, int64_t files_processed) {
+	(void)files_processed;
 	if (planned_bytes > 0) {
 		return planned_bytes;
-	}
-	if (files_processed > 0) {
-		return static_cast<uint64_t>(files_processed);
 	}
 	return 1;
 }

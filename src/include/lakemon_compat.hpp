@@ -38,6 +38,7 @@
 #endif
 
 #include "duckdb/main/config.hpp"
+#include "lakemon_observe.hpp"
 
 #if defined(__has_include)
 #if __has_include("duckdb/logging/logger.hpp")
@@ -73,14 +74,8 @@ inline const char *SafeWhat(const std::exception &ex) {
 	return msg ? msg : "unknown error";
 }
 
-// Nested SQL on a fresh Connection so a failed DuckLake CALL does not poison
-// the ClientContext that is executing lakemon_*. Interrupt and bad_alloc are rethrown.
-inline duckdb::unique_ptr<QueryHandle> RunSQL(duckdb::ClientContext &context, const std::string &sql) {
-	if (!context.db) {
-		throw duckdb::InvalidInputException("lakemon: database handle is not available");
-	}
+inline duckdb::unique_ptr<QueryHandle> QueryOn(duckdb::Connection &con, const std::string &sql) {
 	try {
-		duckdb::Connection con(*context.db);
 		auto result = con.Query(sql);
 		if (!result) {
 			throw duckdb::InvalidInputException("lakemon: query returned no result");
@@ -102,6 +97,16 @@ inline duckdb::unique_ptr<QueryHandle> RunSQL(duckdb::ClientContext &context, co
 	} catch (const std::exception &ex) {
 		throw duckdb::InvalidInputException("lakemon: %s", SafeWhat(ex));
 	}
+}
+
+// Nested SQL on a fresh Connection so a failed DuckLake CALL does not poison
+// the ClientContext that is executing lakemon_*. Interrupt and bad_alloc are rethrown.
+inline duckdb::unique_ptr<QueryHandle> RunSQL(duckdb::ClientContext &context, const std::string &sql) {
+	if (!context.db) {
+		throw duckdb::InvalidInputException("lakemon: database handle is not available");
+	}
+	duckdb::Connection con(*context.db);
+	return QueryOn(con, sql);
 }
 
 // One cell from a materialized query. Out-of-range or expected DuckDB / benign
@@ -337,6 +342,18 @@ inline void RegisterLakemonLogType(duckdb::DatabaseInstance &db) {
 #endif
 }
 
+#if LAKEMON_DUCKDB_2
+inline void LakemonLockTimeoutSet(duckdb::SettingCallbackInfo &, duckdb::Value &parameter) {
+#else
+inline void LakemonLockTimeoutSet(duckdb::ClientContext &, duckdb::SetScope, duckdb::Value &parameter) {
+#endif
+	std::string error;
+	const std::string value = parameter.IsNull() ? std::string() : duckdb::StringValue::Get(parameter);
+	if (!IsSafeTimeoutLiteral(value, error)) {
+		throw duckdb::InvalidInputException("%s", error.c_str());
+	}
+}
+
 inline void RegisterLakemonSettings(duckdb::DatabaseInstance &db) {
 	auto &config = duckdb::DBConfig::GetConfig(db);
 	try {
@@ -352,9 +369,10 @@ inline void RegisterLakemonSettings(duckdb::DatabaseInstance &db) {
 	}
 	try {
 		config.AddExtensionOption("lakemon_catalog_lock_timeout",
-		                          "Postgres lock_timeout applied to the DuckLake metadata catalog "
-		                          "before maintain CALLs (for example 30s). Empty keeps the catalog default.",
-		                          duckdb::LogicalType::VARCHAR, duckdb::Value(""));
+		                          "Postgres lock_timeout applied on the same nested Connection as "
+		                          "each DuckLake CALL, then RESET (for example 30s). Empty keeps "
+		                          "the catalog default.",
+		                          duckdb::LogicalType::VARCHAR, duckdb::Value(""), LakemonLockTimeoutSet);
 	} catch (const duckdb::InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {

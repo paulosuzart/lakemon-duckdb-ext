@@ -12,7 +12,7 @@ static bool Contains(const std::string &haystack, const std::string &needle) {
 
 static void TestStepWeightPrefersBytesThenFiles() {
 	Expect(lakemon::StepWeight(4096, 3) == 4096, "planned bytes win");
-	Expect(lakemon::StepWeight(0, 7) == 7, "file count when bytes are unknown");
+	Expect(lakemon::StepWeight(0, 7) == 1, "file count is not mixed into the byte unit");
 	Expect(lakemon::StepWeight(0, 0) == 1, "flush / expire / skip still have unit weight");
 	Expect(lakemon::StepWeight(0, -1) == 1, "negative file count is treated as unknown");
 }
@@ -55,6 +55,10 @@ static void TestTimeoutLiteralAndSQL() {
 
 	Expect(lakemon::PostgresLockTimeoutSQL("30s") == "SET lock_timeout = '30s'",
 	       "Postgres lock_timeout assignment");
+	Expect(lakemon::PostgresResetLockTimeoutSQL() == "RESET lock_timeout",
+	       "RESET restores the session default");
+	Expect(Contains(lakemon::kTimeoutNotApplied, "was not applied"),
+	       "apply-failure text is stable");
 	Expect(lakemon::PostgresExecuteCall("__ducklake_metadata_lake", "SET lock_timeout = '30s'") ==
 	           "CALL postgres_execute('__ducklake_metadata_lake', 'SET lock_timeout = ''30s''')",
 	           "postgres_execute quotes the SET");

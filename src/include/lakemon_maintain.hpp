@@ -44,8 +44,7 @@ struct MaintainRow {
 	// DuckLake / catalog SQL for this step. Empty for skip / inventory-only rows.
 	std::string sql;
 	PlannedCall planned_call = PlannedCall::None;
-	// Byte weight for progress logs / table_scan_progress. 0 means use files
-	// or a unit weight (see StepWeight).
+	// Byte weight for progress logs. 0 means a unit weight (see StepWeight).
 	uint64_t planned_bytes = 0;
 	int64_t duration_ms = 0;
 };
