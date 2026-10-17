@@ -68,13 +68,17 @@ inline duckdb::unique_ptr<QueryHandle> RunSQL(duckdb::ClientContext &context, co
 			throw duckdb::InvalidInputException("lakemon: query returned no result");
 		}
 		if (result->HasError()) {
-			throw duckdb::InvalidInputException("lakemon: %s", result->GetError());
+			const std::string msg = result->GetError();
+			throw duckdb::InvalidInputException("lakemon: %s", msg.empty() ? "query failed" : msg.c_str());
 		}
 		return result;
 	} catch (const duckdb::InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {
 		throw;
+	} catch (const duckdb::InternalException &ex) {
+		// Nested execute must not leak INTERNAL (that invalidates the database).
+		throw duckdb::InvalidInputException("lakemon: %s", SafeWhat(ex));
 	} catch (const duckdb::Exception &) {
 		throw;
 	} catch (const std::exception &ex) {

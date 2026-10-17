@@ -21,7 +21,7 @@ SQL logic tests under `test/sql/`:
 - `lakemon_expire_no_icu.test` — `now()::TIMESTAMP - INTERVAL` binds without loading ICU
 - `lakemon_execute.test` — file-backed DuckLake catalog: `CALL` / `SELECT` execute of flush+merge and expire (`dry_run => false`). `require ducklake`. `make lake-test` wraps this file in a 60s timeout.
 
-`make test` runs every `.test` file. `lakemon_execute.test` is skipped when ducklake is not in the unittest binary.
+`make test` runs every `.test` file. `lakemon_execute.test` is skipped when ducklake is not in the unittest binary. Ducklake is built only when `LAKEMON_CI_POSTGRES=1` (Postgres lake CI). Default and distribution builds omit it so they do not need roaring from vcpkg.
 
 ## Postgres catalog execute
 

@@ -127,6 +127,12 @@ static void TestExecuteGuardsRefuseBindOnlyAndBegin() {
 	Expect(lakemon::MaintainExecuteRefused(true, "CREATE VIEW v AS SELECT * FROM lakemon_maintain('lake')", error),
 	       "CREATE VIEW is refused");
 	Expect(Contains(error, "CREATE"), "CREATE VIEW error names the keyword");
+	Expect(!lakemon::MaintainExecuteRefused(true, "PRAGMA", error),
+	       "PRAGMA keyword is allowed (pragma query has no active_query)");
+	Expect(!lakemon::MaintainExecuteRefused(true, "PRAGMA lakemon_maintain('lake')", error),
+	       "autocommit PRAGMA is allowed");
+	Expect(lakemon::MaintainExecuteRefused(false, "PRAGMA lakemon_maintain('lake')", error),
+	       "PRAGMA inside BEGIN is refused");
 	Expect(!lakemon::MaintainExecuteRefused(true, "SELECT * FROM lakemon_maintain('lake', dry_run => false)", error),
 	       "plain SELECT is allowed");
 	Expect(lakemon::MaintainExecuteRefused(true, "SELECT * FROM lakemon_maintain(?, dry_run => false)", error, true),

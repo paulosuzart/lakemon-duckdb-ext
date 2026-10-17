@@ -367,7 +367,7 @@ static string MaintainPragmaQuery(ClientContext &context, const FunctionParamete
 	ParseNamedMaintainMap(parameters.named_parameters, options);
 	try {
 		if (!options.dry_run) {
-			lakemon::RequireMaintainExecute(context);
+			lakemon::RequireMaintainExecute(context, false, "PRAGMA");
 		}
 		auto rows = lakemon::RunMaintain(context, options);
 		if (!options.dry_run) {
@@ -391,7 +391,7 @@ static string GlobalMaintainPragmaQuery(ClientContext &context, const FunctionPa
 	ParseNamedGlobalMaintainMap(parameters.named_parameters, options);
 	try {
 		if (!options.dry_run) {
-			lakemon::RequireMaintainExecute(context);
+			lakemon::RequireMaintainExecute(context, false, "PRAGMA");
 		}
 		auto rows = lakemon::RunGlobalMaintain(context, options);
 		if (!options.dry_run) {
