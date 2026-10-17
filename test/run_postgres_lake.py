@@ -690,8 +690,7 @@ def wait_until(timeout_s: float, label: str, fn, required: bool = True, interval
 
 def hold_psql_lock(pg: str, relations: list[str], mode: str = "EXCLUSIVE") -> subprocess.Popen:
 	# EXCLUSIVE blocks INSERT/UPDATE (catalog commit) but not SELECT (inventory).
-	# ACCESS EXCLUSIVE would also stall inventory, which uses a different
-	# Connection and has no ATTACH lock_timeout.
+	# ACCESS EXCLUSIVE would also block inventory reads.
 	if not relations:
 		raise Failed("no Postgres relations to lock")
 	locks = "\n".join(f"LOCK TABLE {relation} IN {mode} MODE;" for relation in relations)
@@ -744,20 +743,16 @@ def finish_or_clear_error(exc: Failed, timeout: int) -> str:
 
 
 LOCK_ERROR_NEEDLES = (
-	"another duckdb session",
 	"lock timeout",
-	"lock_timeout",
-	"could not obtain lock",
 	"canceling statement due to lock",
-	"deadlock",
+	"could not obtain lock",
+	"deadlock detected",
+	"another duckdb session",
 )
 
 
 def looks_like_lock_error(text: str) -> bool:
-	lower = text.lower()
-	if any(needle in lower for needle in LOCK_ERROR_NEEDLES):
-		return True
-	return "lock" in lower and "timeout" in lower
+	return any(needle in text for needle in LOCK_ERROR_NEEDLES)
 
 
 def run_maintain_capture(session: LakeSession, sql: str, timeout: int):
@@ -771,12 +766,15 @@ def run_maintain_capture(session: LakeSession, sql: str, timeout: int):
 
 def assert_maintain_lock_failure(rows, err_text: str | None, elapsed: float, label: str) -> None:
 	error_rows = [row for row in (rows or []) if row.get("status") == "error"]
-	blob = json.dumps(rows or [], default=str).lower() + "\n" + (err_text or "").lower()
+	details = [str(row.get("details", "")) for row in error_rows]
+	if err_text:
+		details.append(err_text)
+	blob = "\n".join(details).lower()
 	if not error_rows and not err_text:
 		raise Failed(f"{label}: maintain succeeded while a catalog write lock was held: {rows}")
 	if not looks_like_lock_error(blob):
 		raise Failed(
-			f"{label}: expected status=error details (or exception) naming lock/timeout, "
+			f"{label}: expected status=error details (or exception) naming lock timeout, "
 			f"got rows={rows} err={err_text}"
 		)
 	print(f"{label}: lock error in {elapsed:.1f}s error_rows={json.dumps(error_rows, default=str)}")
@@ -789,8 +787,31 @@ def session_details_preview(rows, err_text: str | None) -> str:
 	return json.dumps(rows or [], indent=2)
 
 
-def exclusive_lock_visible(dump: str) -> bool:
-	return "ExclusiveLock" in dump
+def sql_literal(value: str) -> str:
+	return "'" + value.replace("'", "''") + "'"
+
+
+def exclusive_locks_granted(pg: str, table_pairs: list[tuple[str, str]]) -> str:
+	if not table_pairs:
+		return ""
+	pairs = ", ".join(f"({sql_literal(schema)}, {sql_literal(name)})" for schema, name in table_pairs)
+	sql = f"""
+	SELECT n.nspname || '.' || c.relname AS relation, l.mode, l.granted, l.pid
+	FROM pg_locks l
+	JOIN pg_class c ON c.oid = l.relation
+	JOIN pg_namespace n ON n.oid = c.relnamespace
+	WHERE l.granted
+	  AND l.mode = 'ExclusiveLock'
+	  AND (n.nspname, c.relname) IN ({pairs});
+	"""
+	out = psql(pg, sql)
+	for line in out.splitlines():
+		if "|" not in line or "relation" in line or "---" in line:
+			continue
+		parts = [part.strip() for part in line.split("|")]
+		if len(parts) >= 3 and parts[1] == "ExclusiveLock" and parts[2] in ("t", "true"):
+			return out
+	return ""
 
 
 def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> None:
@@ -886,7 +907,10 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 	# Hold the lock only after the seed commits.
 
 	# DuckLake commit uses its own PGconn. Fail-fast is libpq
-	# options=-c lock_timeout on ATTACH. Do not ALTER DATABASE.
+	# options=-clock_timeout on ATTACH. Do not ALTER DATABASE.
+	lock_tables = [(schema, name) for schema, name in tables if "snapshot" in name.lower()]
+	if not lock_tables and tables:
+		lock_tables = [tables[0]]
 	locked_session = LakeSession(session.duckdb, session.pg, session.data_path, session.loads)
 	locked_session.inlining_row_limit = 0
 	locked_session.pg_options = "-clock_timeout=5s"
@@ -894,9 +918,10 @@ def execute_concurrent_catalog(session: LakeSession, timeout: int, pg: str) -> N
 	try:
 		def exclusive_held():
 			dump = dump_pg_locks(pg, "wait-exclusive")
-			return dump if exclusive_lock_visible(dump) else ""
+			granted = exclusive_locks_granted(pg, lock_tables)
+			return dump if granted else ""
 
-		held = wait_until(10, "ExclusiveLock on the snapshot relation", exclusive_held)
+		held = wait_until(10, "granted ExclusiveLock on the snapshot relation", exclusive_held)
 		print("psql EXCLUSIVE lock is visible")
 		print(held)
 		rows, err, elapsed = run_maintain_capture(

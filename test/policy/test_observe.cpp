@@ -22,12 +22,8 @@ static void TestProgressFractionAndPercent() {
 	Expect(lakemon::ProgressFraction(2, 8) == 0.25, "quarter of the weight");
 	Expect(lakemon::ProgressFraction(8, 8) == 1.0, "all weight completed");
 	Expect(lakemon::ProgressFraction(9, 8) == 1.0, "overshoot clamps to 1");
-	Expect(lakemon::ProgressPercent(1, 4) == 25.0, "DuckDB progress bar is 0-100");
-	Expect(lakemon::ProgressPercent(0, 0) == 100.0, "empty plan is 100 percent");
-
-	const uint64_t weights[] = {100, 300, 100};
-	Expect(lakemon::TotalStepWeight(weights, 3) == 500, "sum of planned-byte weights");
-	Expect(lakemon::ProgressPercent(100, 500) == 20.0, "first rewrite rung is 20 percent");
+	Expect(lakemon::ProgressFraction(1, 4) == 0.25, "first quarter of planned bytes");
+	Expect(lakemon::ProgressFraction(100, 500) == 0.2, "first rewrite rung is 20 percent of weight");
 }
 
 static void TestByteWeightedProgressMatchesRewriteBias() {
@@ -48,7 +44,7 @@ static void TestCatalogLockErrorHint() {
 	Expect(!lakemon::LooksLikeCatalogLockWait("catalog is not attached"), "ordinary errors stay ordinary");
 	const std::string annotated = lakemon::AnnotateCatalogLockError("ERROR: lock timeout");
 	Expect(Contains(annotated, "another DuckDB session"), "hint names the other session");
-	Expect(Contains(annotated, "lock_timeout"), "hint names lock_timeout");
+	Expect(Contains(annotated, "-clock_timeout=30s"), "hint uses the libpq-safe ATTACH option");
 	Expect(Contains(annotated, "ATTACH"), "hint names the ATTACH fallback");
 	const std::string again = lakemon::AnnotateCatalogLockError(annotated);
 	Expect(again == annotated, "hint is not duplicated");

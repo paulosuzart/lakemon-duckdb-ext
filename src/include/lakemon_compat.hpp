@@ -307,24 +307,6 @@ inline bool GetBooleanSetting(duckdb::ClientContext &context, const char *name, 
 	}
 }
 
-inline std::string GetStringSetting(duckdb::ClientContext &context, const char *name) {
-	duckdb::Value value;
-	if (!TryGetSettingValue(context, name, value) || value.IsNull()) {
-		return std::string();
-	}
-	try {
-		return duckdb::StringValue::Get(value);
-	} catch (const duckdb::InterruptException &) {
-		throw;
-	} catch (const std::bad_alloc &) {
-		throw;
-	} catch (const duckdb::Exception &) {
-		return std::string();
-	} catch (const std::exception &) {
-		return std::string();
-	}
-}
-
 inline void RegisterLakemonLogType(duckdb::DatabaseInstance &db) {
 #if LAKEMON_HAS_DUCKDB_LOG
 	try {

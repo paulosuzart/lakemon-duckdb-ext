@@ -5,7 +5,6 @@
 #include "lakemon_compat.hpp"
 #include "lakemon_maintain.hpp"
 #include "lakemon_policy.hpp"
-#include "lakemon_progress.hpp"
 #include "lakemon_store.hpp"
 
 #include "duckdb.hpp"
@@ -59,9 +58,7 @@ struct SetPolicyBindData : public TableFunctionData {
 
 struct RowState : public GlobalTableFunctionState {
 	vector<vector<Value>> rows;
-	vector<uint64_t> weights;
 	std::atomic<idx_t> offset {0};
-	uint64_t total_weight = 0;
 
 	idx_t MaxThreads() const override {
 		return 1;
@@ -176,9 +173,6 @@ static void FillMaintainRows(RowState &state, const std::vector<lakemon::Maintai
 		state.rows.push_back({Value(row.step), Value(row.schema_name), Value(row.table_name), Value(row.action),
 		                       Value(row.status), Value::BIGINT(row.files_processed), Value::BIGINT(row.files_created),
 		                       Value(row.details)});
-		const uint64_t weight = lakemon::StepWeight(row.planned_bytes, row.files_processed);
-		state.weights.push_back(weight);
-		state.total_weight += weight;
 	}
 }
 

@@ -9,12 +9,11 @@
 namespace lakemon {
 
 static constexpr const char *kLogStderrSetting = "lakemon_log_stderr";
-static constexpr const char *kLakemonLogTypeName = "lakemon";
 
 static constexpr const char *kCatalogLockHint =
     "lakemon: DuckLake catalog commit could not obtain a Postgres lock "
     "(another DuckDB session may be holding the catalog). "
-    "Commit or disconnect the other session, or put options=-c lock_timeout=30s "
+    "Commit or disconnect the other session, or put options=-clock_timeout=30s "
     "on the Postgres ATTACH string so the wait fails fast.";
 
 inline bool LooksLikeCatalogLockWait(const std::string &message) {
