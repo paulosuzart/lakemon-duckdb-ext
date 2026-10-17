@@ -9,6 +9,7 @@
 #include "duckdb/main/database.hpp"
 
 #include <new>
+#include <string>
 
 // Detect DuckDB 2.x by result_format.hpp, which exists only on 2.x.
 // identifier.hpp is not a 2.x signal: it was backported to 1.5.6.
