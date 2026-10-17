@@ -28,8 +28,8 @@ Each job uploads GitHub Actions artifacts named `lakemon-<duckdb_version>-extens
 
 Do this after the version/build change is on `main`. This repo does not create the tag or the Release from CI.
 
-1. Pick a tag that matches `v*` (for example `v0.1.0`) on the commit you want to ship.
-2. Push the tag: `git tag v0.1.0 && git push origin v0.1.0`. That starts **Main Extension Distribution Pipeline** and builds **1.5.3, 1.5.5, 1.5.6, and 2.x**.
+1. Pick a tag that matches `v*` (for example `v0.1.1`) on the commit you want to ship.
+2. Push the tag: `git tag v0.1.1 && git push origin v0.1.1`. That starts **Main Extension Distribution Pipeline** and builds **1.5.3, 1.5.5, 1.5.6, and 2.x**.
    Alternatively, **Actions → Main Extension Distribution Pipeline → Run workflow** on that commit (same four versions; artifacts stay on the Actions run until you attach them to a Release).
 3. When the run is green, open it and download the artifacts (`lakemon-v1.5.3-extension-*`, `lakemon-v1.5.5-extension-*`, `lakemon-v1.5.6-extension-*`, `lakemon-v2.0-cyanoptera-extension-*`).
 4. **Releases → Draft a new release**, choose the same `v*` tag, attach the downloaded binaries (the `.duckdb_extension` files, or the artifact zips), and publish.
