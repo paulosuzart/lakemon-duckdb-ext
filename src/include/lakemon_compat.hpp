@@ -251,18 +251,13 @@ struct LakemonLogType : public duckdb::LogType {
 
 inline void WriteLakemonLog(duckdb::ClientContext &context, const std::string &message) {
 #if LAKEMON_HAS_DUCKDB_LOG
+	// Do not use DUCKDB_LOG_* macros here: they expand to unqualified
+	// Logger / LogLevel and fail to compile inside namespace lakemon.
 	try {
-		DUCKDB_LOG_INTERNAL(context, "lakemon", duckdb::LogLevel::LOG_INFO, message);
-		return;
-	} catch (const duckdb::InterruptException &) {
-		throw;
-	} catch (const std::bad_alloc &) {
-		throw;
-	} catch (const duckdb::Exception &) {
-	} catch (const std::exception &) {
-	}
-	try {
-		DUCKDB_LOG_INFO(context, "%s", message.c_str());
+		duckdb::Logger &logger = duckdb::Logger::Get(context);
+		if (logger.ShouldLog("lakemon", duckdb::LogLevel::LOG_INFO)) {
+			logger.WriteLog("lakemon", duckdb::LogLevel::LOG_INFO, message);
+		}
 	} catch (const duckdb::InterruptException &) {
 		throw;
 	} catch (const std::bad_alloc &) {
