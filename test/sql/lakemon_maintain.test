@@ -178,6 +178,28 @@ CALL lakemon_maintain_global('no_such_lake', 'main.events');
 ----
 lakemon_maintain_global
 
+# Per-step logs appear in duckdb_logs when logging is enabled.
+statement ok
+SET enable_logging = true;
+
+statement ok
+SET lakemon_log_stderr = true;
+
+query II
+SELECT step, status FROM lakemon_maintain('no_such_lake');
+----
+inventory	error
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs() WHERE message LIKE 'lakemon %start%' OR message LIKE 'lakemon %end%';
+----
+true
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs() WHERE message LIKE '%progress=%';
+----
+true
+
 # Session remains usable after the inventory / global error rows.
 query I
 SELECT lakemon_version();

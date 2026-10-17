@@ -21,6 +21,9 @@ policy-test:
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -I$(PROJ_DIR)src/include -I$(PROJ_DIR)test/policy \
 		-o $(PROJ_DIR)test/policy/test_sql $(PROJ_DIR)test/policy/test_sql.cpp
 	$(PROJ_DIR)test/policy/test_sql
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -I$(PROJ_DIR)src/include -I$(PROJ_DIR)test/policy \
+		-o $(PROJ_DIR)test/policy/test_observe $(PROJ_DIR)test/policy/test_observe.cpp
+	$(PROJ_DIR)test/policy/test_observe
 
 # Execute flush+merge and expire against a real lake. A hang fails via timeout.
 # Requires a build with LAKEMON_CI_POSTGRES=1 (ducklake is not in the default binary).
@@ -31,6 +34,6 @@ lake-test:
 
 # Postgres DuckLake catalog (needs a running Postgres and a build with LAKEMON_CI_POSTGRES=1).
 .PHONY: postgres-lake-test
-LAKE_PG_TIMEOUT ?= 90
+LAKE_PG_TIMEOUT ?= 180
 postgres-lake-test:
 	python3 $(PROJ_DIR)test/run_postgres_lake.py --timeout $(LAKE_PG_TIMEOUT)

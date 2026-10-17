@@ -202,6 +202,8 @@ Table work only: inventory, flush, rewrite, merge. Does **not** expire snapshots
 
 Result columns: `step`, `schema_name`, `table_name`, `action`, `status`, `files_processed`, `files_created`, `details`.
 
+Long table passes log each step (start/end, kind, table, duration, files, error, byte-weighted `progress`) to DuckDB logging. Enable with `CALL enable_logging();` or `SET enable_logging = true;` and read `duckdb_logs()` (`message` starts with `lakemon `, type `lakemon` when that log type is registered). `SET lakemon_log_stderr = true` also writes those lines to stderr. `SET lakemon_catalog_lock_timeout = '30s'` issues `SET lock_timeout` on the DuckLake Postgres metadata catalog (via `postgres_execute` / `postgres_query`) so a commit that waits on another session fails fast instead of hanging. A native `table_scan_progress` callback is registered (0–100, byte-weighted); `CALL` / `SELECT` still execute in `bind_replace`, so the CLI progress bar does not advance during DuckLake work — use the logs.
+
 `dry_run => true` sets `status=planned` and appends the generated SQL in `details`. Execute sets `status=ok` for steps that ran. Rewrite emits **one result row per planned rung** (`action` is `rung_1` / `rung_2` / …, or `catalog` when DuckLake `rewrite_delete_threshold` is set). `details` always includes `band`, `delete_threshold`, `planned_files`, `planned_bytes`, and `planned_deletes`. `files_processed` is that rung's planned file count. `files_created` is the row count returned by that DuckLake `CALL` (typically one row per created file; `0` when the CALL returns no rows). `auto_compact` skips still list each computed rung.
 
 Execute plans, then runs each non-skip DuckLake `CALL` as its own committed statement. A failed step keeps its planned SQL in `details`, appends the error, sets `status=error`, and marks later SQL steps `skip` with `not run: previous step failed`. The session stays usable. Interrupt cancels the query (the result rows are not returned); steps that already committed stay committed. Unread per-table metadata is an inventory `error` row (not a silent drop); tables that were read still proceed. A total inventory failure stops the plan. Out-of-memory is not swallowed.
@@ -258,6 +260,13 @@ Writes the rewrite ladder or one merge band into `__lakemon.policy` in the **cur
 
 Omitted fields keep the current effective value (previous override or built-in). Result columns: `kind`, `name`, `status`, `details` (`ok` / `error`). Bind errors and `status=error` leave the DuckDB session usable.
 
+### Settings
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `lakemon_log_stderr` | `BOOLEAN` | `false` | Mirror per-step `lakemon start` / `lakemon end` lines to stderr |
+| `lakemon_catalog_lock_timeout` | `VARCHAR` | empty | Postgres `lock_timeout` duration (`15s`, `30s`, `2min`) applied to `__ducklake_metadata_<catalog>` before DuckLake `CALL`s |
+
 ### `lakemon_version()`
 
 Scalar function returning the extension version string.
@@ -265,6 +274,8 @@ Scalar function returning the extension version string.
 ## Operating tips
 
 - **Plan before you run.** `lakemon_table_stats` and `CALL lakemon_maintain` / `CALL lakemon_maintain_global` show the rungs (threshold, files, bytes), merge targets, and `auto_compact` skips before any file is touched.
+- **See progress.** A large table pass can run many minutes. `CALL enable_logging();` then `SELECT message FROM duckdb_logs() WHERE message LIKE 'lakemon %';` after (or `SET lakemon_log_stderr = true` for live stderr). Lines include `step`, `table`, `duration_ms`, `files_*`, and `progress` (completed weight / planned weight; rewrite/merge weights use planned bytes).
+- **Another session on the catalog.** A second session that holds a Postgres transaction on the DuckLake metadata catalog can block the catalog commit for the whole step. `SET lakemon_catalog_lock_timeout = '30s'` so the wait becomes an error that names that cause. You can also put `options=-c lock_timeout=30s` in the Postgres connection string used by `ATTACH`.
 - **Large backlog.** lakemon has no wall-clock budget today. Prefer one table at a time (`CALL lakemon_maintain('lake', 'schema.t')`) then `CALL lakemon_maintain_global('lake')`, a tighter policy via `lakemon_set_policy` / DuckLake `set_option`, or native `CALL`s with file caps (`max_compacted_files`). An unbounded full-catalog table pass can run a long time. Expire and orphan cleanup are catalog-global and do not need a per-table loop.
 - **Single step by hand.** For one table step, call the native DuckLake functions directly (`ducklake_flush_inlined_data`, `ducklake_rewrite_data_files`, `ducklake_merge_adjacent_files`, `ducklake_expire_snapshots`, `ducklake_cleanup_old_files`, `ducklake_delete_orphaned_files`).
 - **Zero rewrite threshold.** lakemon never plans or executes `ducklake_rewrite_data_files` with `delete_threshold` 0.0 (or <= 0). Use the native `CALL ducklake_rewrite_data_files(..., delete_threshold => 0)` if you need that.
@@ -306,7 +317,7 @@ The in-tree shell already loads `lakemon`.
 - `make test` — SQL smoke: `lakemon_version`, `lakemon_policy` / `lakemon_set_policy`, bind errors / maintain plan rows when no catalog is attached, `lakemon_maintain_global` registration and retention skip/plan rows, ICU-free expire expression, and (when ducklake is built in) file-backed execute of flush+merge and expire
 - `make lake-test` — `test/sql/lakemon_execute.test` under a 60s timeout so a hang fails (`LAKEMON_CI_POSTGRES=1` build; skipped otherwise)
 - `make postgres-lake-test` — same execute path against a Postgres DuckLake catalog (`LAKEMON_CI_POSTGRES=1` build, `LAKEMON_PG` connection string)
-- CI: `make policy-test` and **Postgres lake execute** (DuckDB **1.5.5** and **2.x**, Postgres service, hang timeout, flush/merge/expire asserts) on every push/PR. Full DuckDB **1.5.5** and **2.x** (`v2.0-cyanoptera`) distribution builds run on `main`, `v*` tags, or **Actions → Main Extension Distribution Pipeline → Run workflow** (use that before a community listing submit). A PR that changes `extension_config.cmake`, `vcpkg.json`, or the distribution workflow also runs those everyday matrices. DuckDB **1.5.3** and **1.5.6** binaries are built only on `v*` tags or that same **Run workflow** path (not on ordinary pushes to `main`).
+- CI: `make policy-test` and **Postgres lake execute** (DuckDB **1.5.5**, **1.5.6**, and **2.x**, Postgres service, hang timeout, flush/merge/expire asserts, step logs, hundreds of files, concurrent catalog session) on every push/PR. Full DuckDB **1.5.5** and **2.x** (`v2.0-cyanoptera`) distribution builds run on `main`, `v*` tags, or **Actions → Main Extension Distribution Pipeline → Run workflow** (use that before a community listing submit). A PR that changes `extension_config.cmake`, `vcpkg.json`, or the distribution workflow also runs those everyday matrices. DuckDB **1.5.3** and **1.5.6** binaries are built only on `v*` tags or that same **Run workflow** path (not on ordinary pushes to `main`).
 
 Manual check: `ATTACH` a lake, `CALL lakemon_set_policy(...)` for ladder size / merge bands, `CALL lake.set_option(...)` for the five honored DuckLake keys, then `CALL lakemon_table_stats` / `CALL lakemon_maintain(..., dry_run => true)` and confirm planned rewrite steps (rung + byte-derived threshold, never `0.0`), merge target, and `auto_compact` skips. Confirm expire/cleanup intervals with `CALL lakemon_maintain_global(..., dry_run => true)`. Execute with the same `CALL`s without `dry_run`.
 

@@ -32,6 +32,9 @@ inline bool GlobalMaintainIncludesTableWork() {
 // CALL on a nested Connection (own commit). DuckLake forbids mixing data
 // changes and compaction in one transaction, so one-query CTE execute cannot
 // flush + set_option + merge together. Not table-function init (that deadlocks).
+// Moving execute into table-function GetData would be needed for a live
+// progress bar and streamed result rows; that is not done (same catalog lock
+// as init). Logs report byte-weighted progress after each step instead.
 // dry_run => false is allowed only for CALL / SELECT / FROM / WITH / PRAGMA in
 // autocommit. EXPLAIN, PREPARE, CREATE VIEW, and other wrappers are refused.
 inline bool TableFunctionRunsDuckLakeCalls() {

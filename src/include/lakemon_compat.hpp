@@ -37,6 +37,24 @@
 #include "duckdb/main/materialized_query_result.hpp"
 #endif
 
+#include "duckdb/main/config.hpp"
+
+#if defined(__has_include)
+#if __has_include("duckdb/logging/logger.hpp")
+#define LAKEMON_HAS_DUCKDB_LOG 1
+#include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/log_type.hpp"
+#include "duckdb/logging/logger.hpp"
+#else
+#define LAKEMON_HAS_DUCKDB_LOG 0
+#endif
+#else
+#define LAKEMON_HAS_DUCKDB_LOG 1
+#include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/log_type.hpp"
+#include "duckdb/logging/logger.hpp"
+#endif
+
 #include <initializer_list>
 #include <utility>
 
@@ -215,6 +233,140 @@ inline void AddNamedParameters(
 		function.named_parameters[param.first] = param.second;
 	}
 #endif
+}
+
+#if LAKEMON_HAS_DUCKDB_LOG
+struct LakemonLogType : public duckdb::LogType {
+	static constexpr const char *NAME = "lakemon";
+	static constexpr duckdb::LogLevel LEVEL = duckdb::LogLevel::LOG_INFO;
+
+	LakemonLogType() : LogType(NAME, LEVEL) {
+	}
+
+	static duckdb::string ConstructLogMessage(const duckdb::string &message) {
+		return message;
+	}
+};
+#endif
+
+inline void WriteLakemonLog(duckdb::ClientContext &context, const std::string &message) {
+#if LAKEMON_HAS_DUCKDB_LOG
+	try {
+		DUCKDB_LOG_INTERNAL(context, "lakemon", duckdb::LogLevel::LOG_INFO, message);
+		return;
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
+	try {
+		DUCKDB_LOG_INFO(context, "%s", message.c_str());
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
+#else
+	(void)context;
+	(void)message;
+#endif
+}
+
+inline bool TryGetSettingValue(duckdb::ClientContext &context, const char *name, duckdb::Value &value) {
+	try {
+		return static_cast<bool>(context.TryGetCurrentSetting(name, value));
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		return false;
+	} catch (const std::exception &) {
+		return false;
+	}
+}
+
+inline bool GetBooleanSetting(duckdb::ClientContext &context, const char *name, bool fallback) {
+	duckdb::Value value;
+	if (!TryGetSettingValue(context, name, value) || value.IsNull()) {
+		return fallback;
+	}
+	try {
+		return duckdb::BooleanValue::Get(value);
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		return fallback;
+	} catch (const std::exception &) {
+		return fallback;
+	}
+}
+
+inline std::string GetStringSetting(duckdb::ClientContext &context, const char *name) {
+	duckdb::Value value;
+	if (!TryGetSettingValue(context, name, value) || value.IsNull()) {
+		return std::string();
+	}
+	try {
+		return duckdb::StringValue::Get(value);
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+		return std::string();
+	} catch (const std::exception &) {
+		return std::string();
+	}
+}
+
+inline void RegisterLakemonLogType(duckdb::DatabaseInstance &db) {
+#if LAKEMON_HAS_DUCKDB_LOG
+	try {
+		db.GetLogManager().RegisterLogType(duckdb::make_uniq<LakemonLogType>());
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
+#else
+	(void)db;
+#endif
+}
+
+inline void RegisterLakemonSettings(duckdb::DatabaseInstance &db) {
+	auto &config = duckdb::DBConfig::GetConfig(db);
+	try {
+		config.AddExtensionOption("lakemon_log_stderr",
+		                          "Write lakemon maintain step start/end lines to stderr",
+		                          duckdb::LogicalType::BOOLEAN, duckdb::Value::BOOLEAN(false));
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
+	try {
+		config.AddExtensionOption("lakemon_catalog_lock_timeout",
+		                          "Postgres lock_timeout applied to the DuckLake metadata catalog "
+		                          "before maintain CALLs (for example 30s). Empty keeps the catalog default.",
+		                          duckdb::LogicalType::VARCHAR, duckdb::Value(""));
+	} catch (const duckdb::InterruptException &) {
+		throw;
+	} catch (const std::bad_alloc &) {
+		throw;
+	} catch (const duckdb::Exception &) {
+	} catch (const std::exception &) {
+	}
 }
 
 } // namespace lakemon

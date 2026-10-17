@@ -6,7 +6,7 @@
 make policy-test
 ```
 
-Compiles `test/policy/test_policy.cpp`, `test_options.cpp`, `test_overrides.cpp`, and `test_sql.cpp` against the header-only policy/options/diagnostics/SQL helpers (no DuckDB).
+Compiles `test/policy/test_policy.cpp`, `test_options.cpp`, `test_overrides.cpp`, `test_sql.cpp`, and `test_observe.cpp` against the header-only policy/options/diagnostics/SQL/progress helpers (no DuckDB).
 
 ## Extension smoke
 
@@ -32,6 +32,6 @@ LAKEMON_CI_POSTGRES=1 make
 make postgres-lake-test
 ```
 
-`test/run_postgres_lake.py` attaches `ducklake:postgres:…`, seeds inlined rows + many small files + deletes, then `CALL lakemon_maintain(..., dry_run => false)` and `CALL lakemon_maintain_global(..., expire_older_than => '0 days')`. A 90s timeout treats a hang as failure. It asserts inlined rows were flushed, data files decreased after merge, and snapshot count dropped after expire.
+`test/run_postgres_lake.py` attaches `ducklake:postgres:…`, seeds inlined rows + many small files + deletes, then `CALL lakemon_maintain(..., dry_run => false)` and `CALL lakemon_maintain_global(..., expire_older_than => '0 days')`. A hang timeout treats a stuck `CALL` as failure. It asserts inlined rows were flushed, data files decreased after merge, snapshot count dropped after expire, `duckdb_logs()` contains per-step start/end/`progress=` lines, and no step duration exceeds a generous cap. A second pass seeds hundreds of small files and dumps `pg_locks` / `pg_stat_activity` during maintain. A concurrent pass holds a second DuckDB session and a Postgres `ACCESS EXCLUSIVE` lock on the catalog snapshot relation; maintain must finish or fail with a lock/timeout error (not hang).
 
 GitHub Actions workflow **Postgres lake execute** runs this on every pull request for DuckDB 1.5.5, 1.5.6, and 2.x. It also checks that `EXPLAIN`, `PREPARE`, `CREATE VIEW`, `BEGIN`, and a parameterized `?` bind with `dry_run => false` error without changing snapshot or file counts, and that one `CALL` adds one snapshot per ok mutating step.
