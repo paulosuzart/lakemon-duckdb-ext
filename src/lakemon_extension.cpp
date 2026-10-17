@@ -512,12 +512,9 @@ static void EmitPolicy(RowState &state, const lakemon::policy::ActivePolicy &pol
 		                      Value(tier.target_file_size),
 		                      Value("max_compacted_files=" + std::to_string(tier.max_compacted_files)), Value(source)});
 	}
-	const char *flush_source =
-	    flush_max_delete_files == lakemon::kDefaultFlushInlinedMaxDeleteFiles ? lakemon::policy::kSourceDefault
-	                                                                         : "session";
 	state.rows.push_back({Value(lakemon::policy::kKindSetting), Value(lakemon::policy::kFlushInlinedMaxDeleteFilesName),
 	                      Value("0"), Value(""), Value(std::to_string(flush_max_delete_files)),
-	                      Value(lakemon::policy::FormatFlushInlinedSettingNotes()), Value(flush_source)});
+	                      Value(lakemon::policy::FormatFlushInlinedSettingNotes()), Value("")});
 }
 
 static unique_ptr<FunctionData> PolicyBind(ClientContext &, TableFunctionBindInput &input,

@@ -1,5 +1,6 @@
 #include "lakemon_catalog.hpp"
 #include "lakemon_compat.hpp"
+#include "lakemon_pipeline.hpp"
 #include "lakemon_store.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -274,7 +275,8 @@ static bool MatchesTableFilter(const std::string &schema_name, const std::string
 
 static void MeasureInlinedDeleteTable(duckdb::ClientContext &context, const std::string &meta,
                                       int64_t table_id, policy::TableHint &hint) {
-	const std::string delete_table = QuoteIdent(InlinedDeleteTableName(table_id));
+	const std::string table_name = InlinedDeleteTableName(table_id);
+	const std::string delete_table = QuoteIdent(table_name);
 	std::ostringstream sql;
 	sql << "SELECT COUNT(*)::BIGINT, "
 	       "COUNT(DISTINCT CASE WHEN d.end_snapshot IS NULL THEN d.data_file_id END)::BIGINT, "
@@ -294,9 +296,18 @@ static void MeasureInlinedDeleteTable(duckdb::ClientContext &context, const std:
 		throw;
 	} catch (const std::bad_alloc &) {
 		throw;
-	} catch (const duckdb::Exception &) {
-		// No ducklake_inlined_delete_<id> (or unread): treat as zero backlog.
-	} catch (const std::exception &) {
+	} catch (const duckdb::Exception &ex) {
+		const std::string message = SafeWhat(ex);
+		if (LooksLikeMissingInlinedDeleteTable(message, table_name)) {
+			return;
+		}
+		hint.inlined_delete_error = message.empty() ? "lakemon: unread inlined-delete metadata" : message;
+	} catch (const std::exception &ex) {
+		const std::string message = SafeWhat(ex);
+		if (LooksLikeMissingInlinedDeleteTable(message, table_name)) {
+			return;
+		}
+		hint.inlined_delete_error = message.empty() ? "lakemon: unread inlined-delete metadata" : message;
 	}
 }
 
@@ -348,9 +359,9 @@ std::vector<policy::TableHint> LoadInlinedDeleteBacklog(duckdb::ClientContext &c
 	} catch (const std::bad_alloc &) {
 		throw;
 	} catch (const duckdb::Exception &) {
-		return rows;
+		throw;
 	} catch (const std::exception &) {
-		return rows;
+		throw;
 	}
 	return rows;
 }
@@ -363,6 +374,7 @@ static void AttachInlinedDeleteStats(std::vector<policy::TableHint> &hints,
 				hint.inlined_delete_rows = row.inlined_delete_rows;
 				hint.inlined_delete_files_active = row.inlined_delete_files_active;
 				hint.inlined_delete_files_ended = row.inlined_delete_files_ended;
+				hint.inlined_delete_error = row.inlined_delete_error;
 				break;
 			}
 		}
@@ -398,8 +410,20 @@ std::vector<policy::TableHint> InventoryTables(duckdb::ClientContext &context, c
 		throw;
 	} catch (const std::bad_alloc &) {
 		throw;
-	} catch (const duckdb::Exception &) {
-	} catch (const std::exception &) {
+	} catch (const duckdb::Exception &ex) {
+		const std::string message = SafeWhat(ex);
+		for (auto &hint : hints) {
+			if (hint.inlined_delete_error.empty()) {
+				hint.inlined_delete_error = message;
+			}
+		}
+	} catch (const std::exception &ex) {
+		const std::string message = SafeWhat(ex);
+		for (auto &hint : hints) {
+			if (hint.inlined_delete_error.empty()) {
+				hint.inlined_delete_error = message;
+			}
+		}
 	}
 	// table_stats has no status column: total unread metadata must not look empty.
 	// Join every diagnostic (maintain already surfaces each one as a row).

@@ -857,6 +857,9 @@ struct TableHint {
 	uint64_t inlined_delete_rows = 0;
 	uint64_t inlined_delete_files_active = 0;
 	uint64_t inlined_delete_files_ended = 0;
+	// Non-empty when the inlined-delete table exists but could not be read
+	// (permission, timeout, …). Missing table is not an error (counts stay 0).
+	std::string inlined_delete_error;
 };
 
 inline uint64_t PlannedFlushDeleteFiles(const TableHint &hint) {
@@ -873,7 +876,14 @@ inline std::string FormatFlushInlinedDetails(const TableHint &hint) {
 }
 
 inline std::string FormatFlushInlinedSettingNotes() {
-	return "0 = no limit; skip flush_inlined when planned delete files exceed this";
+	return "0 = no limit; skip flush_inlined when planned delete files exceed this; negatives rejected";
+}
+
+inline std::string FormatFlushInlinedMeasureError(const TableHint &hint) {
+	if (hint.inlined_delete_error.empty()) {
+		return std::string();
+	}
+	return FormatFlushInlinedDetails(hint) + " | unread inlined-delete metadata: " + hint.inlined_delete_error;
 }
 
 inline void RefreshRewritePlan(TableHint &hint) {

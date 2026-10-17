@@ -52,6 +52,13 @@ WHERE step = 'flush_inlined';
 ----
 ok
 
+# No inlined-delete table until a parquet-file delete is inlined. Counts stay 0.
+query III
+SELECT inlined_delete_rows, inlined_delete_files_active, inlined_delete_files_ended
+FROM lakemon_table_stats('lake', 'bronze_financial.subscription');
+----
+0	0	0
+
 query I
 SELECT (SELECT count(*) FROM ducklake_snapshots('lake')) > (SELECT snaps FROM lakemon_once_before);
 ----

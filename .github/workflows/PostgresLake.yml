@@ -89,6 +89,10 @@ jobs:
       - name: Build lakemon + ducklake + postgres_scanner
         run: make -j"$(nproc)"
 
+      - name: SQL logic tests
+        timeout-minutes: 10
+        run: make test
+
       - name: Execute maintain + expire on Postgres catalog
         timeout-minutes: 15
         run: |

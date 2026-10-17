@@ -9,9 +9,12 @@ namespace lakemon {
 
 // After inventory succeeds, flush / rewrite / merge are planned independently.
 // Only a hard inventory failure stops the table pipeline before rewrite/merge.
-// Execute (CALL / SELECT / PRAGMA) is fail-fast: a failed DuckLake step stops
-// the rest of the batch. Expire, old-file cleanup, and orphan delete are
-// catalog-global and live in lakemon_maintain_global, not lakemon_maintain.
+// Execute is fail-fast for rewrite/merge/retention: a failed DuckLake step
+// stops the rest of the batch. A flush_inlined error does not: catalog-wide
+// maintain issues one flush CALL per inventoried table, so one table's flush
+// failure must not skip rewrite/merge on the remaining tables (or on that
+// table). Expire, old-file cleanup, and orphan delete are catalog-global and
+// live in lakemon_maintain_global, not lakemon_maintain.
 inline bool InventoryFailureStopsPipeline() {
 	return true;
 }
@@ -19,6 +22,12 @@ inline bool InventoryFailureStopsPipeline() {
 inline bool FlushErrorSkipsStep(const std::string &step) {
 	(void)step;
 	return false;
+}
+
+// ExecutePlannedRows: flush_inlined errors stay on that row. Other SQL steps
+// still fail-fast. Interrupt still stops the batch.
+inline bool StepErrorStopsBatch(const std::string &step) {
+	return step != "flush_inlined";
 }
 
 inline bool TableMaintainIncludesRetention() {
@@ -160,6 +169,32 @@ inline std::string FlushInlinedSkipReason(uint64_t planned_delete_files, int64_t
 	return "planned_delete_files=" + std::to_string(planned_delete_files) +
 	       " exceeds lakemon_flush_inlined_max_delete_files=" + std::to_string(max_delete_files) +
 	       "; run ducklake_expire_snapshots to drop ended files before flushing";
+}
+
+inline bool ValidFlushInlinedMaxDeleteFiles(int64_t value, std::string &error) {
+	if (value < 0) {
+		error = "lakemon: lakemon_flush_inlined_max_delete_files must be >= 0 (0 = no limit)";
+		return false;
+	}
+	return true;
+}
+
+// Missing ducklake_inlined_delete_<id> is normal (no inlined deletes yet).
+// Permission / timeout / other catalog errors must not look like "no table".
+inline bool LooksLikeMissingInlinedDeleteTable(const std::string &message, const std::string &table_name) {
+	if (table_name.empty() || message.find(table_name) == std::string::npos) {
+		return false;
+	}
+	if (message.find("does not exist") != std::string::npos) {
+		return true;
+	}
+	if (message.find("not found") != std::string::npos) {
+		return true;
+	}
+	if (message.find("Unknown table") != std::string::npos) {
+		return true;
+	}
+	return false;
 }
 
 } // namespace lakemon

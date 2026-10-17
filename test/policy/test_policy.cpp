@@ -465,6 +465,10 @@ static void TestPipelineStepsAreIndependent() {
 	Expect(lakemon::InventoryFailureStopsPipeline(), "hard inventory failure stops rewrite/merge");
 	Expect(!lakemon::FlushErrorSkipsStep("rewrite"), "flush error does not skip rewrite");
 	Expect(!lakemon::FlushErrorSkipsStep("merge"), "flush error does not skip merge");
+	Expect(!lakemon::StepErrorStopsBatch("flush_inlined"),
+	       "flush_inlined execute error does not fail-fast the rest of the batch");
+	Expect(lakemon::StepErrorStopsBatch("rewrite"), "rewrite execute error still fail-fasts");
+	Expect(lakemon::StepErrorStopsBatch("merge"), "merge execute error still fail-fasts");
 	Expect(!lakemon::TableMaintainIncludesRetention(),
 	       "lakemon_maintain must not expire snapshots or clean old/orphan files");
 	Expect(!lakemon::GlobalMaintainIncludesTableWork(),
@@ -532,6 +536,30 @@ static void TestFlushInlinedGuardAndDetails() {
 	Expect(std::string(kKindSetting) == "setting", "policy kind for the setting row");
 	Expect(std::string(kFlushInlinedMaxDeleteFilesName) == "flush_inlined_max_delete_files",
 	       "policy name matches the setting suffix");
+
+	std::string setting_error;
+	Expect(lakemon::ValidFlushInlinedMaxDeleteFiles(0, setting_error), "0 is valid (no limit)");
+	Expect(lakemon::ValidFlushInlinedMaxDeleteFiles(500, setting_error), "default is valid");
+	Expect(!lakemon::ValidFlushInlinedMaxDeleteFiles(-1, setting_error), "negatives are rejected");
+	Expect(setting_error.find("must be >= 0") != std::string::npos, "negative error names the bound");
+
+	Expect(lakemon::LooksLikeMissingInlinedDeleteTable(
+	           "Catalog Error: Table with name ducklake_inlined_delete_3 does not exist!",
+	           "ducklake_inlined_delete_3"),
+	       "missing inlined-delete table is recognized");
+	Expect(lakemon::LooksLikeMissingInlinedDeleteTable("relation \"ducklake_inlined_delete_3\" does not exist",
+	                                                  "ducklake_inlined_delete_3"),
+	       "Postgres missing-relation wording is recognized");
+	Expect(!lakemon::LooksLikeMissingInlinedDeleteTable(
+	           "ERROR: permission denied for table ducklake_inlined_delete_3", "ducklake_inlined_delete_3"),
+	       "permission errors are not missing-table");
+	Expect(!lakemon::LooksLikeMissingInlinedDeleteTable("ERROR: lock timeout", "ducklake_inlined_delete_3"),
+	       "timeout without the table name is not missing-table");
+	TableHint unread;
+	unread.inlined_delete_error = "permission denied";
+	const std::string measure = FormatFlushInlinedMeasureError(unread);
+	Expect(measure.find("unread inlined-delete metadata") != std::string::npos, "measure error is explicit");
+	Expect(measure.find("permission denied") != std::string::npos, "measure error keeps the cause");
 }
 
 static void TestFormatInventoryDiagnosticsJoinsAll() {

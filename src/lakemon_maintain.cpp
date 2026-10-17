@@ -200,7 +200,9 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 			if (!ducklake_present) {
 				row.status = "error";
 				AppendDetails(row, "lakemon: ducklake is not loaded");
-				failed = true;
+				if (StepErrorStopsBatch(row.step)) {
+					failed = true;
+				}
 				EmitStepLog(context, true, row, completed_weight, total_weight, "");
 				EmitStepLog(context, false, row, completed_weight + weight, total_weight, row.details);
 				completed_weight += weight;
@@ -225,11 +227,15 @@ void ExecutePlannedRows(duckdb::ClientContext &context, std::vector<MaintainRow>
 		} catch (const Exception &ex) {
 			row.status = "error";
 			AppendDetails(row, AnnotateCatalogLockError(SafeWhat(ex)));
-			failed = true;
+			if (StepErrorStopsBatch(row.step)) {
+				failed = true;
+			}
 		} catch (const std::exception &ex) {
 			row.status = "error";
 			AppendDetails(row, AnnotateCatalogLockError(SafeWhat(ex)));
-			failed = true;
+			if (StepErrorStopsBatch(row.step)) {
+				failed = true;
+			}
 		}
 		row.duration_ms = static_cast<int64_t>(
 		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
@@ -303,34 +309,34 @@ std::vector<MaintainRow> RunMaintain(duckdb::ClientContext &context, const Maint
 	const int64_t max_delete_files =
 	    GetInt64Setting(context, kFlushInlinedMaxDeleteFilesSetting, kDefaultFlushInlinedMaxDeleteFiles);
 
-	std::vector<policy::TableHint> flush_targets;
-	try {
-		flush_targets = LoadInlinedDeleteBacklog(context, options.catalog, options.table);
-	} catch (const duckdb::InterruptException &) {
-		throw;
-	} catch (const std::bad_alloc &) {
-		throw;
-	} catch (const duckdb::Exception &) {
-	} catch (const std::exception &) {
-	}
-	if (flush_targets.empty()) {
-		flush_targets = hints;
-	}
-
-	for (const auto &target : flush_targets) {
+	// One flush CALL per inventoried table (hints already carry inlined-delete
+	// stats from InventoryTables). Catalog-wide auto_compact=false skips flush
+	// the same way as rewrite/merge, so the delete-file guard is not reported.
+	for (const auto &hint : hints) {
 		TableRef ref;
-		ref.schema = target.schema_name;
-		ref.table = target.table_name;
-		const uint64_t planned = policy::PlannedFlushDeleteFiles(target);
-		const std::string details = policy::FormatFlushInlinedDetails(target);
+		ref.schema = hint.schema_name;
+		ref.table = hint.table_name;
+		const uint64_t planned = policy::PlannedFlushDeleteFiles(hint);
+		if (policy::SkipForAutoCompact(catalog_wide, hint.auto_compact)) {
+			rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name, "ducklake_flush_inlined_data",
+			                       "skip", static_cast<int64_t>(planned), 0, "auto_compact=false"));
+			continue;
+		}
+		if (!hint.inlined_delete_error.empty()) {
+			rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name, "ducklake_flush_inlined_data",
+			                       "error", static_cast<int64_t>(planned), 0,
+			                       policy::FormatFlushInlinedMeasureError(hint)));
+			continue;
+		}
+		const std::string details = policy::FormatFlushInlinedDetails(hint);
 		if (FlushInlinedExceedsLimit(planned, max_delete_files)) {
-			rows.push_back(MakeRow("flush_inlined", target.schema_name, target.table_name, "ducklake_flush_inlined_data",
+			rows.push_back(MakeRow("flush_inlined", hint.schema_name, hint.table_name, "ducklake_flush_inlined_data",
 			                       "skip", static_cast<int64_t>(planned), 0,
 			                       details + " | " + FlushInlinedSkipReason(planned, max_delete_files)));
 			continue;
 		}
 		AppendPlanned(rows, "flush_inlined", "ducklake_flush_inlined_data", FlushInlinedDataCall(options.catalog, ref),
-		              target.schema_name, target.table_name, details, static_cast<int64_t>(planned));
+		              hint.schema_name, hint.table_name, details, static_cast<int64_t>(planned));
 	}
 
 	for (const auto &hint : hints) {

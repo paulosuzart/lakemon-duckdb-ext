@@ -187,8 +187,23 @@ RESET lakemon_log_stderr;
 statement ok
 SET lakemon_flush_inlined_max_delete_files = 0;
 
+query I
+SELECT current_setting('lakemon_flush_inlined_max_delete_files')::BIGINT;
+----
+0
+
 statement ok
 RESET lakemon_flush_inlined_max_delete_files;
+
+query I
+SELECT current_setting('lakemon_flush_inlined_max_delete_files')::BIGINT;
+----
+500
+
+statement error
+SET lakemon_flush_inlined_max_delete_files = -1;
+----
+lakemon:
 
 # Session remains usable after the inventory / global error rows.
 query I
