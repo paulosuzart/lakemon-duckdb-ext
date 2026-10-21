@@ -40,7 +40,7 @@ cmake -S duckdb -B build/tidy \
 	-DENABLE_EXTENSION_AUTOLOADING=0 \
 	-DENABLE_EXTENSION_AUTOINSTALL=0 \
 	-DDUCKDB_EXTENSION_CONFIGS="${ROOT}/extension_config.cmake" \
-	-DOVERRIDE_GIT_DESCRIBE=v1.5.5
+	-DOVERRIDE_GIT_DESCRIBE=v1.5.6
 
 db="build/tidy/compile_commands.json"
 if [[ ! -f "$db" ]]; then
