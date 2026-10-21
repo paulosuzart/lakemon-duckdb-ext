@@ -1,7 +1,7 @@
 #
 # Real execute against a Postgres DuckLake catalog.
 # Runs on every pull_request and push so the PR check can go green.
-# DuckDB 1.5.5, 1.5.6, and 2.x, linux_amd64 only (not the distribution matrix).
+# DuckDB 1.5.5, 1.5.6, and 2.0.0, linux_amd64 only (not the distribution matrix).
 #
 name: Postgres lake execute
 on:
@@ -25,16 +25,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # vcpkg pins match extension-ci-tools for that DuckDB line.
-          # 1.5.5: 2025.12.12. 2.x: 2026.06.24 (has roaring 4.7.1 / zlib 1.3.2).
+          # vcpkg pins match extension-ci-tools / community-extensions for that line.
+          # 1.5.5 / 1.5.6: 2025.12.12. 2.0.0: 2026.06.24 (roaring 4.7.1 / zlib 1.3.2).
           - duckdb_version: v1.5.5
             ci_tools_version: v1.5.5
             vcpkg_commit: 84bab45d415d22042bd0b9081aea57f362da3f35
           - duckdb_version: v1.5.6
             ci_tools_version: v1.5.6
             vcpkg_commit: 84bab45d415d22042bd0b9081aea57f362da3f35
-          - duckdb_version: v2.0-cyanoptera
-            ci_tools_version: main
+          - duckdb_version: v2.0.0
+            ci_tools_version: v2.0-cyanoptera
             vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
     services:
       postgres:

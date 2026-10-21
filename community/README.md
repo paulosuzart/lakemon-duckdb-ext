@@ -22,14 +22,14 @@ This repo already matches the template layout. `community/description.yml` is th
 ## Remaining steps
 
 1. Make `github.com/paulosuzart/lakemon-duckdb-ext` public when you are ready to list it.
-2. Confirm CI is green on the commit you want to publish: run **Actions → Main Extension Distribution Pipeline → Run workflow** (DuckDB 1.5.5 and 2.x on every run; 1.5.3 and 1.5.6 as well on this dispatch / on `v*` tags). That workflow does not run on ordinary feature-branch pushes.
+2. Confirm CI is green on the commit you want to publish: run **Actions → Main Extension Distribution Pipeline → Run workflow** (DuckDB 1.5.5 and 2.0.0 on every run; 1.5.3 and 1.5.6 as well on this dispatch / on `v*` tags). That workflow does not run on ordinary feature-branch pushes.
 3. Copy `community/description.yml` into a fork of [duckdb/community-extensions](https://github.com/duckdb/community-extensions) at:
 
    ```
    extensions/lakemon/description.yml
    ```
 
-4. Set `repo.ref` to the **full commit SHA** of this repository that you want built (and optionally `repo.ref_next` to a SHA compatible with DuckDB’s upcoming release, currently `v2.0-cyanoptera`). Official guidance: provide the hash of the latest commit targeting stable as `ref`.
+4. Set `repo.ref` to the **full commit SHA** of this repository that you want built for latest stable DuckDB (**v2.0.0**). Optional fields: `repo.variegata` (v1.5.6), `repo.ref_next` (upcoming DuckDB, not v2.0.0), `repo.andium` (v1.4.5). There is no `ref_stable`. Official docs list only `repo.ref`; the extra keys come from `scripts/build.py`. Same lakemon source compiles for 1.5.x and 2.0.0, so one `ref` is enough.
 5. Open a pull request against `duckdb/community-extensions` that adds **only** that `description.yml` (plus docs fields you want on the generated page).
 6. Community CI builds and tests the extension. After maintainer approval and a successful deploy, the listing appears at
    `https://duckdb.org/community_extensions/extensions/lakemon`.

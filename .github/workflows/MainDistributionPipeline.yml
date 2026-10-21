@@ -3,7 +3,7 @@
 # Does not run on ordinary feature-branch pushes.
 #
 # Versions and triggers:
-#   - DuckDB 1.5.5 + 2.x: every run (push to main, v* tags, workflow_dispatch)
+#   - DuckDB 1.5.5 + 2.0.0: every run (push to main, v* tags, workflow_dispatch)
 #   - DuckDB 1.5.3 + 1.5.6: v* tags and workflow_dispatch only
 #     (not on push to main — those two extra matrices are for GitHub Release binaries)
 #
@@ -14,10 +14,10 @@
 #
 # Run the full matrix (including 1.5.3 / 1.5.6) before cutting a release:
 #   GitHub → Actions → "Main Extension Distribution Pipeline" → Run workflow
-#   (select the branch). Also runs automatically on push to main (1.5.5 + 2.x)
+#   (select the branch). Also runs automatically on push to main (1.5.5 + 2.0.0)
 #   unless the commit only changes markdown/docs, and on v* tags (all four
 #   versions). Path filters apply to branch pushes only, not to v* tags or
-#   workflow_dispatch. pull_request runs 1.5.5 + 2.x when extension_config,
+#   workflow_dispatch. pull_request runs 1.5.5 + 2.0.0 when extension_config,
 #   vcpkg.json, or this workflow change (so a leaked extra extension is caught
 #   before merge).
 #
@@ -73,9 +73,10 @@ jobs:
       extension_name: lakemon
 
   duckdb-2-build:
-    name: Build extension binaries (DuckDB 2.x)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
+    name: Build extension binaries (DuckDB 2.0.0)
+    # extension-ci-tools has no v2.0.0 tag; v2.0-cyanoptera is the 2.0 line.
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
-      duckdb_version: v2.0-cyanoptera
-      ci_tools_version: main
+      duckdb_version: v2.0.0
+      ci_tools_version: v2.0-cyanoptera
       extension_name: lakemon

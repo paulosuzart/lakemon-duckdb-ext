@@ -70,7 +70,7 @@ CALL lakemon_maintain_global('lake');
 
 ## Requirements
 
-- DuckDB **1.5.\*** (built and tested against `v1.5.5`) or DuckDB **2.x** (`v2.0-cyanoptera` / upcoming 2.0)
+- DuckDB **1.5.\*** (built and tested against `v1.5.5`) or DuckDB **2.0.0**
 - The core **`ducklake`** extension loaded in the same session
 - An attached DuckLake catalog (`ATTACH 'ducklake:...' AS lake`)
 
@@ -318,7 +318,7 @@ The in-tree shell already loads `lakemon`.
 - `make test` — SQL smoke: `lakemon_version`, `lakemon_policy` / `lakemon_set_policy`, bind errors / maintain plan rows when no catalog is attached, `lakemon_maintain_global` registration and retention skip/plan rows, ICU-free expire expression, and (when ducklake is built in) file-backed execute of flush+merge and expire
 - `make lake-test` — `test/sql/lakemon_execute.test` under a 60s timeout so a hang fails (`LAKEMON_CI_POSTGRES=1` build; skipped otherwise)
 - `make postgres-lake-test` — same execute path against a Postgres DuckLake catalog (`LAKEMON_CI_POSTGRES=1` build, `LAKEMON_PG` connection string). Asserts stderr step lines (not `duckdb_logs()`), and a concurrent `EXCLUSIVE` lock on the snapshot relation must return `status=error` with lock/timeout details (maintain ATTACH uses `options=-clock_timeout=5s`; no hang, no `ALTER DATABASE lock_timeout`).
-- CI: `make policy-test` and **Postgres lake execute** (DuckDB **1.5.5**, **1.5.6**, and **2.x**, Postgres service, `make test` sqllogictest, hang timeout, flush/merge/expire asserts, inlined-delete flush-guard skip, stderr step logs, hundreds of files, concurrent catalog session) on every push/PR. Full DuckDB **1.5.5** and **2.x** (`v2.0-cyanoptera`) distribution builds run on `main`, `v*` tags, or **Actions → Main Extension Distribution Pipeline → Run workflow** (use that before a community listing submit). A PR that changes `extension_config.cmake`, `vcpkg.json`, or the distribution workflow also runs those everyday matrices. DuckDB **1.5.3** and **1.5.6** binaries are built only on `v*` tags or that same **Run workflow** path (not on ordinary pushes to `main`).
+- CI: `make policy-test` and **Postgres lake execute** (DuckDB **1.5.5**, **1.5.6**, and **2.0.0**, Postgres service, `make test` sqllogictest, hang timeout, flush/merge/expire asserts, inlined-delete flush-guard skip, stderr step logs, hundreds of files, concurrent catalog session) on every push/PR. Full DuckDB **1.5.5** and **2.0.0** distribution builds run on `main`, `v*` tags, or **Actions → Main Extension Distribution Pipeline → Run workflow** (use that before a community listing submit). A PR that changes `extension_config.cmake`, `vcpkg.json`, or the distribution workflow also runs those everyday matrices. DuckDB **1.5.3** and **1.5.6** binaries are built only on `v*` tags or that same **Run workflow** path (not on ordinary pushes to `main`).
 
 Manual check: `ATTACH` a lake, `CALL lakemon_set_policy(...)` for ladder size / merge bands, `CALL lake.set_option(...)` for the five honored DuckLake keys, then `CALL lakemon_table_stats` / `CALL lakemon_maintain(..., dry_run => true)` and confirm planned rewrite steps (rung + byte-derived threshold, never `0.0`), merge target, and `auto_compact` skips. Confirm expire/cleanup intervals with `CALL lakemon_maintain_global(..., dry_run => true)`. Execute with the same `CALL`s without `dry_run`.
 

@@ -2,7 +2,7 @@
 # Cheap, no-DuckDB checks. Runs on every push and pull_request together
 # with PostgresLake.yml (real execute on a Postgres DuckLake catalog).
 # Full DuckDB distribution builds live in MainDistributionPipeline.yml:
-# 1.5.5 + 2.x on push to main / v* tags / workflow_dispatch; extra 1.5.3
+# 1.5.5 + 2.0.0 on push to main / v* tags / workflow_dispatch; extra 1.5.3
 # + 1.5.6 binaries only on v* tags or workflow_dispatch.
 #
 name: Policy tests
