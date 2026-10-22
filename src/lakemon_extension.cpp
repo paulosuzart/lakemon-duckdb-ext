@@ -30,6 +30,9 @@
 
 namespace duckdb {
 
+// Fallback for lakemon_version() and Version() when EXT_VERSION_LAKEMON is unset.
+static constexpr const char *kLakemonVersion = "0.2.0";
+
 namespace {
 
 struct MaintainBindData : public TableFunctionData {
@@ -691,7 +694,7 @@ static unique_ptr<GlobalTableFunctionState> SetPolicyInit(ClientContext &context
 }
 
 static void VersionFun(DataChunk &, ExpressionState &, Vector &result) {
-	lakemon::ReferenceScalar(result, Value("0.2.0"));
+	lakemon::ReferenceScalar(result, Value(kLakemonVersion));
 }
 
 template <typename FunctionT>
@@ -813,7 +816,7 @@ std::string LakemonExtension::Version() const {
 #ifdef EXT_VERSION_LAKEMON
 	return EXT_VERSION_LAKEMON;
 #else
-	return "0.2.0";
+	return kLakemonVersion;
 #endif
 }
 
