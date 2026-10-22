@@ -1,5 +1,5 @@
 # Included by DuckDB's build system. It specifies which extension to load.
-# Extension version: 0.1.1 (lakemon_version / LakemonExtension::Version fallback).
+# Extension version: 0.2.0 (lakemon_version / LakemonExtension::Version fallback).
 # Maintain logs and table_scan_progress use core DuckDB APIs only —
 # do not add extra extensions here for that path.
 

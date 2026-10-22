@@ -48,7 +48,8 @@ def find_extension(build_dir: Path, *names: str) -> str | None:
 	for name in names:
 		candidates = [
 			build_dir / "extension" / name / f"{name}.duckdb_extension",
-			build_dir / "repository" / "v1.5.5" / "linux_amd64" / f"{name}.duckdb_extension",
+			build_dir / "repository" / "v1.5.6" / "linux_amd64" / f"{name}.duckdb_extension",
+			build_dir / "repository" / "v2.0.0" / "linux_amd64" / f"{name}.duckdb_extension",
 		]
 		for path in candidates:
 			if path.is_file():

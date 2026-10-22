@@ -209,7 +209,7 @@ lakemon:
 query I
 SELECT lakemon_version();
 ----
-0.1.1
+0.2.0
 
 # table_stats uses the DuckDB error path (no status column).
 statement error

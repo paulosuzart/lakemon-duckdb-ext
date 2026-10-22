@@ -8,7 +8,7 @@
 extension:
   name: lakemon
   description: Smart DuckLake table maintain (adaptive rewrite + merge) and catalog-global expire/cleanup
-  version: 0.1.1
+  version: 0.2.0
   language: C++
   build: cmake
   license: MIT
@@ -17,10 +17,19 @@ extension:
 
 repo:
   github: paulosuzart/lakemon-duckdb-ext
-  # Replace with the commit SHA you want the community builder to compile.
+  # Public docs list only repo.ref. Extra keys are from community-extensions
+  # scripts/build.py (DUCKDB_VERSION / DUCKDB_LATEST_STABLE from
+  # .github/workflows/build.yml, currently v2.0.0). No ref_stable field.
+  #   ref        — SHA for latest stable DuckDB (v2.0.0).
+  #   variegata  — optional SHA when DUCKDB_VERSION == 'v1.5.6'; omit to use ref.
+  #   andium     — optional SHA for DuckDB v1.4.5.
+  #   ref_next   — optional SHA when DUCKDB_VERSION is not latest stable
+  #                (upcoming line; build_next.yml is currently disabled).
+  # Same source compiles for 1.5.6 and 2.0.0 (lakemon_compat.hpp).
+  # Do not set extra SHAs until they exist.
   ref: REPLACE_WITH_COMMIT_SHA
-  # Optional: SHA compatible with DuckDB 2.x / upcoming stable.
-  # ref_next: REPLACE_WITH_2X_COMMIT_SHA
+  # variegata: REPLACE_WITH_1_5_6_COMMIT_SHA
+  # ref_next: REPLACE_WITH_UPCOMING_DUCKDB_COMMIT_SHA
 
 docs:
   hello_world: |
@@ -49,4 +58,4 @@ docs:
     * Optional stderr step logs with duration and byte-weighted progress
 
     Requires the core ducklake extension in the same session and an attached DuckLake catalog.
-    Compatible with DuckDB 1.5.* and DuckDB 2.x.
+    Compatible with DuckDB 1.5.6 and DuckDB 2.0.0 (lakemon 0.2.0+). Older DuckDB 1.5.x builds are no longer produced.
